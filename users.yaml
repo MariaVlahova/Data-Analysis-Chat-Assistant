@@ -1,0 +1,27 @@
+# Prototype stand-in for the signed login token that production would send (A4, Q39).
+#
+# Rules (decision 3.4, S14):
+#   - A brand manager sees only the brands listed. Brand names are compared EXACTLY:
+#     case and spacing count, because products.brand is free text (S1).
+#   - An EMPTY brand list means NO access. It is never read as "all brands".
+#   - Only role: ceo may set all_brands: true. That is the only way to see every brand.
+#
+# PLACEHOLDER BRANDS: plan 03 replaces the "<verified brand N>" names with real brands from the top
+# brands by item count. Do not guess brand names here. `doctor` warns until they are replaced.
+users:
+  alice:
+    name: Alice
+    role: brand_manager
+    brands: ["<verified brand 1>", "<verified brand 2>"]
+  bob:
+    name: Bob
+    role: brand_manager
+    brands: ["<verified brand 3>"]
+  ceo:
+    name: CEO
+    role: ceo
+    all_brands: true
+  nobrands:                # fixture for S14: the chat must refuse to start for this user
+    name: No Brands
+    role: brand_manager
+    brands: []

@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Prototype runtime files and eval caches (plan 01)
+data/
+.deepeval/

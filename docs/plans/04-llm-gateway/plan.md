@@ -60,7 +60,7 @@ Model IDs are config values, never hard-coded. The names below are the ones deci
 
 | Step | Primary model | Fallback (prototype) |
 |---|---|---|
-| INPUT_GUARD, EVIDENCE_CHECK (and preference extraction, design-only) | `gemini-3.5-flash-lite` | `gemini-3.8-flash` |
+| INPUT_GUARD, EVIDENCE_CHECK | `gemini-3.5-flash-lite` | `gemini-3.8-flash` |
 | PLANNER, SQL_WRITE, SQL_REPAIR, COMPOSER | `gemini-3.8-flash` | `gemini-3.5-flash-lite` |
 | LAST_REPAIR, full reports (off in the prototype), offline JUDGE | `gemini-3.1-pro-preview` (preview only, pin the ID, S13) | none |
 | Embeddings (not used in the prototype) | `gemini-embedding-001` | none |

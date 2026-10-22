@@ -1,0 +1,30 @@
+# Single requirements file for the prototype (plan 01).
+# Compatible ranges for now; freeze the working versions after plan 09 passes.
+
+# CLI
+typer>=0.12
+rich>=13.7
+
+# Config and data models
+pydantic>=2.7
+PyYAML>=6.0
+python-dotenv>=1.0
+
+# BigQuery (plan 03)
+google-cloud-bigquery>=3.25
+db-dtypes>=1.2
+pandas>=2.2
+pyarrow>=16.0
+
+# SQL parsing (plan 05)
+sqlglot>=25.0
+
+# Gemini (plan 04)
+google-genai>=1.0
+
+# Agent graph and checkpoints (plans 07, 08)
+langgraph>=0.2
+langgraph-checkpoint-sqlite>=2.0
+
+# Tests
+pytest>=8.0
