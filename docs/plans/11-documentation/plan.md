@@ -16,12 +16,12 @@ The brief says the assessment focuses mainly on **system design, the technical e
 | D3 | Setup instructions (including `pip install -r requirements.txt`) and an example run (plan 01 started the setup text) | PRD 8 |
 | D5 | Public GitHub repository with docs, code and diagram | PRD 8 |
 | D6 | Framework choice (LangGraph) with an honest experience statement | PRD 8 |
-| F45, F50 to F54 | Design-only requirements: production observability, Golden update and retrieval, memory, system learning, quality assurance, persona management | PRD 6.5, 6.6 |
+| F45, F50, F52, F53 | Design-only requirements: production observability, Golden update and retrieval, system learning, quality assurance. F51 (user memory) and F54 (persona management) are out of scope. | PRD 6.5, 6.6 |
 
 D2 covers the brief's items 2.1, 2.2, 2.3 and 2.5. Item 2.4 (setup and example run) is D3, which lives in the README.
 
 ## Inputs and rules
-- **decision.md is a summary.** For R4 (memory) and R6 (evaluation) the fuller sources are in the requirements folder: `memoryAgent.md`, `README-evaluation.md` and the matching sections of `Phase1-decisions.md`. Read them when writing those sections.
+- **decision.md is a summary.** For R6 (evaluation) the fuller sources are in the requirements folder: `README-evaluation.md` and the matching sections of `Phase1-decisions.md`. Read them when writing that section. `memoryAgent.md` is not used: the memory agent is out of scope (owner decision, 2026-10-22).
 - Use the status tags ([DECIDED], [PROPOSED], [OPEN]) the way decision.md does, so the reader can see what is final.
 - **Be honest about what is built.** Every design-only item is labelled as design, with its prototype stand-in from decision §8. Never describe an unbuilt feature as working.
 - Write for the client (OpsFleet): the team lead and the project managers, who judge system design. Short sentences, tables, plain words, defined terms (decision.md's glossary is a good base).
@@ -31,7 +31,7 @@ D2 covers the brief's items 2.1, 2.2, 2.3 and 2.5. Item 2.4 (setup and example r
 | File | Content | Covers |
 |---|---|---|
 | `docs/architecture.md` | The Mermaid diagram(s), the service table, the corrections list, the prototype-versus-production table | D1 |
-| `docs/technical-explanation.md` | Framework, models, data flow, storage, errors and fallbacks, the eight requirements, NFRs, risks | D2, D6, F45, F50 to F54 |
+| `docs/technical-explanation.md` | Framework, models, data flow, storage, errors and fallbacks, the eight requirements, NFRs, risks | D2, D6, F45, F50, F52, F53 |
 | `README.md` | What it is, real versus design-only, setup, run, commands, example run, tests, layout, troubleshooting | D3 |
 | Public GitHub repository | All of the above plus code, plans and PRD | D5 |
 
@@ -70,9 +70,7 @@ flowchart TD
   HG --> EX
   TR --> TREG["Tool Registry: saved reports, charts, email, web (in-process or MCP)"]
   CA --> GI[("Golden Index: pgvector hybrid search")]
-  CA --> PR[("Persona Registry, TTL cache")]
-  CA --> MS[("Memory Store: Postgres, row-level security")]
-  CO --> MQ["Task queue (Cloud Tasks)"] --> MA["Background Memory Agent"] --> MS
+  CA --> PF[("personas/default.yaml in git: one static persona")]
   RT --> LG["LLM Gateway: rate limiter, retry with jitter, circuit breaker"]
   LG --> GEM["Gemini API, fallback Vertex AI Gemini"]
   RT --> TEL["Telemetry: OpenTelemetry to Langfuse and Cloud Trace; events to Pub/Sub with dead-letter to BigQuery metrics"]
@@ -82,13 +80,12 @@ flowchart TD
     GCS -->|"Eventarc"| ING["Ingest Job: validate, dry-run, DLP, embed"]
     ING --> GI
     FB["Feedback, saved reports, good runs"] --> CQ["Candidate queue"] --> AN
-    PE["persona_editor role"] --> PA["Persona Admin UI: draft, test, approve, activate"] --> PR
     CI["CI"] --> EV["Eval Pipeline: golden set, red team, AI judge"] --> GATE["Deploy gate"]
   end
 ```
 2. **Request-path diagram.** Reuse decision.md's "Main request path" Mermaid block as the simple view.
 3. **Service table.** One row per building block: what it does, the chosen technology, **why**, the rejected alternative, and the prototype stand-in. Take rows from decision section 2 (steps table) and section 3 (each "Rejected" and "Revisit if" line).
-4. **Corrections to the source diagram** (decision section 2, "Differences from the diagram"): the delete-or-save shortcut; the Evidence Check's missing section 3.18; the Background Memory Agent behind a queue; the **audit log in Cloud SQL Postgres, not BigQuery** (it must not share a pipeline with debug traces; only metrics go to BigQuery); any `persona_editor` edits, not only the CEO's office; the step inputs that the diagram does not show; the login token versus a Postgres access-rules table (Q39).
+4. **Corrections to the source diagram** (decision section 2, "Differences from the diagram"): the delete-or-save shortcut; the Evidence Check's missing section 3.18; the Memory Store line, dropped because the memory agent is out of scope (owner decision, 2026-10-22); the **audit log in Cloud SQL Postgres, not BigQuery** (it must not share a pipeline with debug traces; only metrics go to BigQuery); the Persona Registry, Persona Admin UI, "CEO office" editing and per-user "My style", dropped because persona management is out of scope (owner decision, 2026-10-22); the step inputs that the diagram does not show; the login token versus a Postgres access-rules table (Q39).
 5. **Prototype versus production table.** Copy decision section 8.
 6. **Data stores and retention table.** Copy decision section 6, and keep its [NOT SPECIFIED] cells visible rather than filling them in.
 
@@ -114,12 +111,12 @@ flowchart TD
 | R1 Hybrid Intelligence | Design (optional prototype slice, plan 10) | Trio format; Cloud Storage plus pgvector hybrid search; top 3 above a threshold; the **update loop** (analyst review, candidate queue, nightly re-check, no automatic promotion); **brand-tag filter (S5)**; step views; cold start |
 | R2 Safety and PII | **Prototype** | The four layers table; SQL Guard rules and the inline-view scope rewrite; Result Guard parts A to E; fake customer IDs per session (owner decision); k = 10; ranked-list exception [open]; Output Guard; zero-PII rule; brand scope per user and the S14 fix |
 | R3 High-Stakes Oversight | **Prototype** | Find, preview, confirm, delete; selectors; friction by risk; ID-set hash; soft delete and undo; audit log; idempotency keys; checkpointed pause; the delete-or-save shortcut |
-| R4.1 User memory | Design | Background Memory Agent behind a queue; fixed profile schema; explicit rules save at once; implicit signals (2.5 total, 80% agreement, half weight every 14 days); idempotency key on queue messages; row-level security; owner decision of 2026-10-22 |
+| R4.1 User memory | **Out of scope** | One line only: no memory agent and no learned user profile (owner decision, 2026-10-22). Do not describe a memory design. |
 | R4.2 System learning | Design | Thumbs-up, saved reports and good runs become candidates; analyst approval; weekly failure mining; poisoning and drift protection |
 | R5 Resilience | **Prototype** | Typed errors; repair loop; empty-result broaden; loop stop rules; budget; gateway with limiter, retry, breaker, fallback; chaos flag |
 | R6 Quality assurance | Design (stand-in pytest suite [PROPOSED]) | Three layers; four intent signals; golden set of 100 to 200; red team; about 50 human labels; evalkit and Promptfoo; deploy gate and 5% rollout; UX with 5 to 8 executive sessions and the System Usability Scale (target not set) |
 | R7 Observability | **Prototype** (local) | Metrics list; trace IDs; spans; Langfuse and Cloud Trace; Pub/Sub to BigQuery; alerts on any PII at output; the deep-dive path from a trace ID to the full conversation view; masking rule for traces |
-| R8 Persona Management | Design (optional file stand-in) | Three layers (locked rules in git, company persona in a registry, "My style"); draft, validate, test on about 10 questions, second-editor approval, activate, one-click rollback; only the Composer sees persona text |
+| R8 Persona Management | **Out of scope** (one static file is built) | A few lines only: no editor UI, registry, versions, approval, rollback or per-user style (owner decision, 2026-10-22). Two layers: locked rules and one static persona file in git; only the Composer sees persona text. Say plainly that a tone change is a code change, so brief item 8 is not met by design. Do not describe a persona-management design. |
 
 Section 6 must include the full fallback chain (primary model, sibling model, Vertex AI Gemini, degraded mode) and say which parts the prototype builds.
 
@@ -134,7 +131,7 @@ Sections: one-paragraph description; **what is real and what is design-only** (t
 
 ## Tasks
 - [ ] Draft `docs/architecture.md` from the diagram above. Check it renders. Fill the service table from decision sections 2 and 3.
-- [ ] Draft `docs/technical-explanation.md` sections 1 and 3 to 11, reading `memoryAgent.md`, `README-evaluation.md` and `Phase1-decisions.md` for R4 and R6.
+- [ ] Draft `docs/technical-explanation.md` sections 1 and 3 to 11, reading `README-evaluation.md` and `Phase1-decisions.md` for R4.2 and R6.
 - [ ] Ask the author for the experience statement. Write section 2.
 - [ ] Reconcile every claim with the built prototype: for each requirement, check that "prototype" really means working and that every stand-in is named.
 - [ ] Finish `README.md`. Capture the **real** example run last.

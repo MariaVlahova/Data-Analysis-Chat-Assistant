@@ -1,0 +1,74 @@
+# Prototype settings (plan 01). Secrets do NOT go here: use .env (see .env.example).
+# A mistyped key stops startup on purpose. Tags: [OPEN] needs a client answer,
+# [PROPOSED] is our proposal, (impl) is an implementation choice.
+
+app:
+  language: en           # A16
+  currency: USD          # A17
+  timezone: UTC          # A17
+  data_dir: data         # runtime files: db.sqlite3, runs.jsonl, traces/, logs/, cache/ (git-ignored)
+  # user_hash_salt: ...  # default: generated once into data/user_hash_salt
+
+bigquery:
+  project_id: null                   # null: GOOGLE_CLOUD_PROJECT or default credentials
+  dataset: bigquery-public-data.thelook_ecommerce
+  max_bytes_billed: 536870912        # 512 MiB per query [OPEN] NFR6, Q3
+  query_timeout_s: 30                # [OPEN] Q3
+  sql_row_limit: 1000                # the forced LIMIT
+  transient_retries: 2
+
+guards:
+  k_anonymity: 10                    # [PROPOSED] NFR13, minimum 2
+  rows_to_model: 50                  # [PROPOSED] NFR14
+  allow_ranked_customer_lists: true  # S7 rule still open
+  max_input_chars: 2000
+
+loop:
+  max_subquestions: 4                # [PROPOSED]
+  sql_repairs: 2                     # [PROPOSED] NFR5
+  broaden_attempts: 1                # [PROPOSED] 3.11
+  max_replans: 0                     # [PROPOSED] 3.10; production default 1, ceiling 2 (Q22)
+  parallel_subqueries: 1             # S12
+
+composer:
+  numeric_retry: 0                   # Q29: 0 removes an unverified number and says so; 1 allows one re-ask
+
+budget:                              # all [OPEN] until Q3 is answered (derivation in plan 04)
+  simple: {calls: 8, seconds: 60}
+  why: {calls: 20, seconds: 60}
+  report: {calls: 20, seconds: 90}
+  bytes_per_turn: 2147483648         # 2 GiB
+
+llm:                                 # plan 04 owns these keys
+  pro_enabled: false
+  models:
+    light: gemini-3.5-flash-lite
+    main: gemini-3.8-flash
+    pro: gemini-3.1-pro-preview
+    embedding: gemini-embedding-001
+  default_rpm: 10                    # raise from the Google AI Studio limits page
+  rate_limits: {}                    # per model: {gemini-3.8-flash: {rpm: 15}}
+  retry: {base_s: 1.0, cap_s: 20.0, attempts: 3}
+  breaker: {failure_threshold: 3, cooldown_s: 30.0}
+
+delete:
+  large_batch_threshold: 10
+  undo_days: 30                      # [PROPOSED] NFR17
+
+retention:
+  audit_days: 365                    # [PROPOSED] NFR21
+  checkpoint_days: 90
+  trace_days: 90                     # [NOT SPECIFIED], Q25 default
+
+observability:
+  metrics_file: data/runs.jsonl
+  traces_dir: data/traces
+
+golden:
+  enabled: false
+  top_k: 3
+  min_similarity: 0.25
+
+persona:
+  enabled: false                     # the one static persona, see personas/default.yaml
+  default: default

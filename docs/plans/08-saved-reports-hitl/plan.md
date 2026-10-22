@@ -169,7 +169,7 @@ tests/test_reports_store.py  test_delete_flow.py  test_idempotency.py  test_audi
 |---|---|---|
 | Q5 report fields, delete type, undo time, legal hold | owner, conversation ID, title, body; soft delete; 30 days; no hold | OpsFleet client |
 | Large batch threshold | 10 reports | Us |
-| Q17 how a user deletes history | Design-only (`forget` tool for memory; checkpoints 90 days) | OpsFleet client |
+| Q17 how a user deletes history | Design-only (checkpoints 90 days) | OpsFleet client |
 | Audit retention | 1 year, by operations in production; not purged in the prototype | OpsFleet client |
 
 ## Risks and pitfalls

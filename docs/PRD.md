@@ -27,7 +27,7 @@ Executives ask questions like "Why did our churn rate spike last month?" or "cre
 | G4 | Destructive actions need one clear confirmation and can be undone |
 | G5 | Failures give an honest message and a trace ID. The interface never crashes. |
 | G6 | The team can see when and why the agent fails |
-| G7 | The design shows how the agent learns, is evaluated, and changes tone without redeploy |
+| G7 | The design shows how the agent learns from reviewed feedback and is evaluated |
 
 #### Non-goals
 - Writes to BigQuery. The database is read-only.
@@ -39,9 +39,8 @@ Executives ask questions like "Why did our churn rate spike last month?" or "cre
 | Persona | Needs | Data access |
 |---|---|---|
 | Brand manager (executive) | Plain answers about their own brands | Only their brands |
-| CEO | All brands. Changes the report tone every week. | All brands, by an explicit "all brands" flag [PROPOSED, our fix for S14 — not yet a client decision] |
+| CEO | All brands. | All brands, by an explicit "all brands" flag [PROPOSED, our fix for S14 — not yet a client decision] |
 | Analyst | Curates the Golden Bucket. Wants the agent to reuse their logic. | Design-only; access model not specified |
-| Persona editor (`persona_editor` role) | Changes the tone with no developer. A second editor approves. | Design-only |
 | Admin (OpsFleet) | Controls access, audit and budgets. Debugs failures. | Audit log; traces (via trace ID); metrics dashboards |
 
 ## 4. Scope
@@ -50,12 +49,12 @@ Executives ask questions like "Why did our churn rate spike last month?" or "cre
 | R1 Hybrid Intelligence (Golden Bucket) | Optional: small seeded trio set with search ("a nice touch") | Yes |
 | R2 Safety and PII masking, brand scope | Yes | |
 | R3 High-Stakes Oversight (delete saved reports) | Yes | |
-| R4.1 User-level memory | | Yes |
+| R4.1 User-level memory | Out of scope (owner decision, 2026-10-22) | No |
 | R4.2 System-level learning | | Yes |
 | R5 Resilience and graceful errors | Yes | |
 | R6 Quality assurance | A pytest suite for our own guard/safety code, as part of testing R2/R3/R5/R7 — decision.md's own §8 already proposes this stand-in, but it is unapproved by the client, not a confirmed R6 prototype slice [PROPOSED] | Full eval pipeline |
 | R7 Observability | Yes (local) | Production stack |
-| R8 Persona management | Persona file only, if time allows | Yes |
+| R8 Persona management | Out of scope (owner decision, 2026-10-22). One static persona file only. | No |
 
 Constraints: 6-12 hour time box [brief]; CLI interface [brief]; runs on another machine [brief]. The brief says to preferably use a Gemini model and be mindful of its free-tier rate limits, not that Gemini is mandatory. Python is our own choice, inferred from the brief's `pip install -r requirements.txt` setup step, not a stated requirement.
 
@@ -145,10 +144,10 @@ Priority: P0 = prototype must have, P1 = prototype should have, D = design-only.
 | ID | Requirement | Design summary |
 |---|---|---|
 | F50 | R1 Golden Bucket update and retrieval | Trios in Cloud Storage, pgvector hybrid search, top 3 above a threshold. Filtering by brand is [PROPOSED] (risk S5 / Q21), not yet decided. New trios: thumbs-up, saved reports and good runs become candidates (F52); an analyst approves each one; a nightly job re-checks SQL. |
-| F51 | R4.1 User memory | Background Memory Agent behind a queue fills a fixed profile schema (length, depth, charts, action items, format). Explicit rules save at once; implicit signals need a total of 2.5 and 80% agreement, half weight every 14 days. |
+| F51 | R4.1 User memory | Out of scope (owner decision, 2026-10-22). No memory agent, queue or Memory Store, and no learned user profile. |
 | F52 | R4.2 System learning | Thumbs-up, saved reports and good runs become candidate trios. An analyst approves each one. Weekly failure mining. |
 | F53 | R6 Quality assurance | Three layers: code checks, checks against analyst answers, AI judge from a different model. One PII leak fails the run. Intent is checked with four signals (stated interpretation, execution accuracy against analyst SQL, requirement coverage, and judge rubrics), not analyst-answer matching alone. UX is 5-8 executive sessions plus the System Usability Scale — the scale is named, but its target score is not set yet, and which evalkit layer runs each rubric is open (Q32). |
-| F54 | R8 Persona management | Locked rules (git), company persona (registry), "My style" per user. Draft, validate, test on about 10 questions, second-editor approval, activate, one-click rollback. A persona change touches only the Composer's prompt; Context Assembly still loads the active persona. |
+| F54 | R8 Persona management | Out of scope (owner decision, 2026-10-22). No editor UI, registry, versions, approval, rollback or per-user style. The persona is one static file, `personas/default.yaml`, next to the locked rules (git). It touches only the Composer's prompt; Context Assembly loads it. A tone change is a code change. |
 
 ## 7. Non-functional requirements
 | ID | Requirement | Target | Status |
@@ -172,7 +171,7 @@ Priority: P0 = prototype must have, P1 = prototype should have, D = design-only.
 | NFR19 | Interface never crashes | Friendly message and trace ID | [DECIDED] |
 | NFR21 | Data kept | Audit log 1 year. Transcripts and checkpoints 90 days, without PII. | [PROPOSED] |
 | NFR22 | Traces and logs kept | [NOT SPECIFIED] | [NOT SPECIFIED] |
-| NFR23 | Persona change | No redeploy, one-click rollback | [DECIDED] |
+| NFR23 | Persona change | Out of scope (owner decision, 2026-10-22). One static persona file. | [DECIDED] |
 | NFR24 | New tool | No graph change | [PROPOSED] |
 | NFR28 | Runs on another machine | Setup instructions; Docker optional | [DECIDED] |
 | NFR29 | Who sees which data | Only the user's brands; the CEO sees all | [DECIDED] |
@@ -216,14 +215,14 @@ We proceed with these defaults until the client answers otherwise.
 | A1 | Confirmed by the client: brand scope is the user's brands. Assumed, not yet confirmed: the filter applies per order item, so a mixed order's total is split and only the user's-brand share counts; answers say so. |
 | A2 | The four-layer access strategy is decided (decision.md §3.4), but the exact PII/column split behind it is still open (Q11), and the real `users` columns are not yet checked against the live schema (Q4 is also open). The source's own best guess, not confirmed: likely identifiers are name, email, address fields and lat/long; likely quasi-identifiers are age, gender, state, city and traffic source. The real customer ID (`users.id`) is not blocked — the Result Guard masks it with a fixed fake ID per session instead (see A3), because blocking it outright would break "top customers" questions. |
 | A3 | A fake ID per session is not PII; the real `users.id` never leaves the Result Guard (owner decision). Per-customer rows are given only as an example for ranked spend lists, never joined to demographic columns — decision.md's own verdict (§9.3) says the PRD still needs this customer-row rule (S7), so we keep it open (see section 11, "top customers" risk). |
-| A4 | Prototype users and brands come from `users.yaml`. Production uses a signed login token (the client said JWT) with the user's brands. Beyond CEO, production roles default to the Phase1 draft's four roles — exec (i.e., brand manager), analyst, persona editor, admin — pending Q42. |
+| A4 | Prototype users and brands come from `users.yaml`. Production uses a signed login token (the client said JWT) with the user's brands. Beyond CEO, production roles default to the Phase1 draft's four roles — exec (i.e., brand manager), analyst, admin — pending Q42. |
 | A5 | Churn is no order in 90 days. "Last month" is the calendar month. We anchor "up-to-date" metrics to the dataset's latest order date and say so, since the public dataset may lag behind the real calendar (Phase1-decisions.md's note to verify the dataset's latest date). Currency and time zone are A17, below. |
 | A6 | Users delete only their own reports. Whether any report is under a legal hold is unconfirmed (Phase1-decisions.md asks us to confirm this); we assume not for the prototype. |
 | A7 | Production runs on Vertex AI in the US region |
 | A8 | About 50 users and 99.5% availability (see NFR10, Q30 — still open) |
 | A9 | Production trios: one per line, up to about 10k, in English; analysts review a few dozen candidates a week |
-| A10 | Any `persona_editor` edits the persona, and a second editor approves (owner decision, 2026-10-22) |
-| A12 | Every role gets "My style" with no approval |
+| A10 | Withdrawn (owner decision, 2026-10-22): there is no persona editing or approval flow |
+| A12 | Withdrawn (owner decision, 2026-10-22): there is no per-user "My style" |
 | A13 | The dataset is synthetic, so free-tier Gemini terms are fine |
 | A14 | The Gemini model IDs named in decision.md §3.2 exist at build time; we re-check them before relying on them |
 | A15 | Confirmed by the client: the Golden Bucket does not exist. We define the trio format and seed a small set ourselves. |
@@ -254,7 +253,7 @@ A11 (retention) and A22 (another team owns ingestion) are carried in this PRD un
 | A customer buys from many brands; a manager sees only part of that spend (S15) | Medium | Label customer totals "spend on your brands" |
 
 ## 12. Open questions
-decision.md §11 marks Q5, Q6, Q10, Q11, Q15, Q26, Q30 and Q41 as the questions to answer before this PRD (none are answered yet), and separately asks the PRD to carry every OpsFleet-client question from its section 10. Both lists are below, plus Q3, which we own ourselves and need answered early for plan 04's budget design.
+decision.md §11 marks Q5, Q6, Q10, Q11, Q15, Q30 and Q41 as the questions to answer before this PRD (none are answered yet), and separately asks the PRD to carry every OpsFleet-client question from its section 10. Both lists are below, plus Q3, which we own ourselves and need answered early for plan 04's budget design.
 
 | ID | Question | Default if unanswered | Owner | Priority |
 |---|---|---|---|---|
@@ -264,11 +263,11 @@ decision.md §11 marks Q5, Q6, Q10, Q11, Q15, Q26, Q30 and Q41 as the questions 
 | Q10 | Which Gemini models; is Pro in the routing table? | Flash only, Pro escalation off, Pro for the AI judge | Client | P0 |
 | Q11 | Which columns are PII? Which does the SQL Guard block, and which does the Result Guard mask? | Block direct identifiers; others only in groups of 10 or more (see A2 for the unverified column names) | Client | P0 |
 | Q15 | What is the daily budget per user? | Alert at 80%; amount from client | Client | P1 |
-| Q17 | Where do history and memory live? How does a user delete them? | Checkpoints 90 days; a `forget` tool for memory | Client | P1 |
+| Q17 | Where does history live? How does a user delete it? | Checkpoints 90 days | Client | P1 |
 | Q18 | What is the production target and region? | Cloud Run, Cloud SQL, Vertex AI, US | Client | P1 |
 | Q19 | Who builds and labels the golden test set and reference SQL? | Analysts, a few dozen items a week | Client | P1 |
 | Q25 | Which metrics and alert limits? How long are logs kept? | Alert on any PII, 90 days, mask PII before writing | Client | P1 |
-| Q26 | How do persona versions and rollback work? | Versions in `persona_versions`, one-click rollback | Client | P1 |
+| Q26 | How do persona versions, rollback and editing work? | They do not exist. One static persona file (owner decision, 2026-10-22) | Us | Answered |
 | Q30 | How many users, what availability, and which response time (20 s or 30 s)? | 50 users, 99.5%, 95% under 30 s | Client | P1 |
 | Q31 | Is there a path to a human analyst for failed turns? | No, honest message only | Client | P2 |
 | Q32 | How do we measure user experience? Which evalkit layer runs each rubric? | 5-8 executive sessions; layers set from the rubric file. (The System Usability Scale is named in NFR27, but no target score is set yet.) | Client | P2 |
@@ -276,7 +275,7 @@ decision.md §11 marks Q5, Q6, Q10, Q11, Q15, Q26, Q30 and Q41 as the questions 
 | Q34 | Do we support only English? | Yes | Client | P2 |
 | Q40 | Does "ingestion is out of scope" also cover the Golden Ingest Job? | No — keep a short Golden update design, because requirement 1 asks for it | Client | P1 |
 | Q41 | In mixed orders, does the brand filter apply per item? Do order totals cover only the user's brands? | Yes to both, and answers say so | Client | P1 |
-| Q42 | Which roles exist besides brand manager and CEO (analyst, persona editor, admin)? | The four Phase1 roles plus CEO | Client | P2 |
+| Q42 | Which roles exist besides brand manager and CEO (analyst, admin)? | Analyst and admin, plus CEO | Client | P2 |
 
 ## 13. Implementation plan
 The prototype is split into eleven plans in [plans/](plans/). Each plan is one `plan.md`. Plans run roughly in order; 10 is optional.
@@ -297,6 +296,6 @@ F5, F33 and F35 appear in two plans because the wrapper/gateway plan (03/04) bui
 | [08-saved-reports-hitl](plans/08-saved-reports-hitl/plan.md) | Saved Reports store and tools, checkpoint persistence, confirmed delete, undo, audit log, idempotency retry test | F20-F28 |
 | [09-evaluation](plans/09-evaluation/plan.md) | Pytest suite, golden cases, attack tests, chaos runs | Section 9 |
 | [10-golden-bucket](plans/10-golden-bucket/plan.md) | Seeded trios and glossary with in-memory search (optional) | F8 |
-| [11-documentation](plans/11-documentation/plan.md) | HLD, Mermaid diagram, technical explanation, README, example run | D1, D2, D3, D5, D6, F45, F50-F54 |
+| [11-documentation](plans/11-documentation/plan.md) | HLD, Mermaid diagram, technical explanation, README, example run | D1, D2, D3, D5, D6, F45, F50, F52, F53 |
 
-Persona and style files (`personas/*.yaml`, a `style:` block, `/persona` and `/style` commands) are a prototype stand-in for the design-only F54, built under plan 01 only if time allows; they are not required for any P0 item.
+The static persona file (`personas/default.yaml`, loaded under plan 01) is all that exists of F54. It is not required for any P0 item.

@@ -38,7 +38,7 @@ Where used: every decision heading, every NFR row, and any item that is missing 
 | MCP | Model Context Protocol. A tool runs as a separate server process. |
 | NFR | Non-functional requirement: a quality target such as speed or cost |
 | Output Guard | Code that scans the final answer text for PII |
-| Persona | The company tone and report style, set by persona editors |
+| Persona | The company tone and report style, kept in one static file |
 | PII | Personal data that identifies a person, such as name or email |
 | PRD | Product requirements document. We write it from this record. |
 | Prompt injection | Hidden instructions in text that try to change the model's behaviour |
@@ -55,9 +55,8 @@ The step table in section 2 explains each pipeline step. The copied diagram keep
 | Persona | Needs |
 |---|---|
 | Brand managers (executives) | Plain answers about their own brands, not SQL. They will not notice a wrong number. |
-| CEO | Sees all brands. Wants to change the report tone every week. |
+| CEO | Sees all brands. |
 | Analysts | They curate the Golden Bucket. The agent should reuse their logic. |
-| Persona editors (`persona_editor` role) | They change the tone every week, with no developer. A second editor approves. |
 | Admins (OpsFleet) | They control access, audit, budgets, and debug failures. |
 #### What "good" looks like
 - Numbers are correct and come from a query. The agent says how it read vague words.
@@ -78,7 +77,8 @@ The step table in section 2 explains each pipeline step. The copied diagram keep
 - Out of scope: writes to BigQuery. The database is read-only.
 - Out of scope (client): data governance, the data ingestion pipeline, data modeling and any outside search service. Another team owns them.
 - Prototype [DECIDED]: Safety and PII, High-Stakes Oversight, Resilience, Observability. A Saved Reports store is in, because a delete needs something to delete.
-- Design-only [DECIDED]: Hybrid Intelligence, Learning Loop (memory, preference extraction), Quality Assurance, Persona Management.
+- Design-only [DECIDED]: Hybrid Intelligence, Learning Loop (system learning), Quality Assurance.
+- Out of scope [DECIDED] (owner decision, 2026-10-22): a memory agent that learns each user's preferences or builds a profile on its own (3.7); persona management, meaning an editor UI, registry, versions, approval, rollback and per-user style (3.9). The persona is one static file.
 - Optional: a small seeded Golden Bucket with search. The client calls it "a nice touch".
 
 Constraints: 6-12 hour time box, Gemini free-tier limits, CLI interface, must run on another machine, dataset `bigquery-public-data.thelook_ecommerce`.
@@ -121,9 +121,9 @@ OFFLINE / CONTROL PLANES
 #### Differences from the diagram
 - Phase1 says a delete needs no SQL and no answer. The diagram has no shortcut from the Input Guard to the Tool Router.
 - The Evidence Check (4b) refers to a section 3.18. That section does not exist in Phase1.
-- memoryAgent.md adds a Background Memory Agent behind a task queue. The diagram does not show it.
+- The diagram has a Memory Store (`User prefs + My style / memory`). We do not build or design it: the memory agent is out of scope (owner decision, 2026-10-22).
 - The diagram sends audit events to BigQuery through the telemetry pipeline. We keep the audit log in Cloud SQL Postgres (Phase1 5), because Phase1 3.9 says the audit log must not share a pipeline with debug traces. Only metrics go to BigQuery.
-- The diagram shows "[ CEO office ]" editing the persona. Any user with the `persona_editor` role edits (see 3.9).
+- The diagram has a Persona Registry, a Persona Admin UI, "[ CEO office ]" editing the persona and a per-user "My style". We build and design none of them: persona management is out of scope (owner decision, 2026-10-22). The persona is one static file (3.9).
 - The input tables (recommended-input.PNG, composer-input.PNG) define what each step reads. The diagram shows no data inputs.
 - The client says the frontend sends a signed login token with the user's brands. The diagram looks up product scopes in Postgres (see Q39).
 #### Main request path
@@ -157,20 +157,19 @@ flowchart TD
 | Identity & Policy Context | Loads the user's role and brands | Login token (client), Cloud SQL Postgres (Phase1) |
 | Agent Runtime | Runs the graph and saves a checkpoint after each step | LangGraph on Cloud Run |
 | 0. Input Guard | Decides: in scope, attack, or which intent | `gemini-3.5-flash-lite`, fixed output format |
-| 1. Context Assembly | Loads trios, glossary, persona, style and preferences once per turn | pgvector search, Persona Registry, Memory Store |
+| 1. Context Assembly | Loads trios, glossary and the persona file once per turn | pgvector search, `personas/default.yaml` |
 | 2. Planner | Splits a question into at most 4 sub-questions. Writes no SQL. | `gemini-3.8-flash` |
 | 3. SQL loop | Writes SQL for each sub-question. Repairs up to 2 times. | `gemini-3.8-flash` |
 | SQL GUARD | Checks the parse tree, blocks PII columns, adds the scope filter | sqlglot, plain Python |
 | BQ dry-run, BigQuery | Dry-run checks syntax and bytes. Then the query runs with a byte cap and timeout. | BigQuery, read-only role |
 | 4. Result Guard | Masks PII, hides small groups, caps rows | Plain Python |
 | 4b. Evidence Check | Asks: do the results answer the question? | Code check, plus Flash-Lite on "why" and report turns |
-| 5. Composer | Writes the answer in the persona and user style | `gemini-3.8-flash`, numeric check, Output Guard |
+| 5. Composer | Writes the answer in the persona's tone | `gemini-3.8-flash`, numeric check, Output Guard |
 | 6. Tool Router | Runs actions (save, delete, chart, email) by risk class | Tool Registry, in-process or MCP |
 | HITL Gate | Pauses for user confirmation on destructive or external actions | LangGraph `interrupt()` |
 | LLM Gateway | Limits the call rate, retries, pauses a failing provider, falls back | Gemini API, then Vertex AI Gemini |
 | Telemetry | Sends traces, metrics and audit events | OpenTelemetry, Langfuse, Cloud Trace, Pub/Sub, BigQuery |
 | Ingest Job | Checks and indexes new trios | Eventarc, dry-run, Cloud Sensitive Data Protection, text vectors |
-| Persona Admin UI | A small web form: draft, test, approve, activate a persona | Persona Registry |
 | Eval Pipeline | Runs tests before deploy | Golden test set, attack tests, AI judge |
 ## 3. Key decisions
 ### 3.1 Agent framework [PROPOSED]
@@ -188,7 +187,7 @@ flowchart TD
 
 | Step | Model |
 |---|---|
-| Input Guard, preference extraction, Evidence Check | `gemini-3.5-flash-lite` |
+| Input Guard, Evidence Check | `gemini-3.5-flash-lite` |
 | Planner, SQL writing, SQL repair, Composer | `gemini-3.8-flash` |
 | Last repair, full reports (off in prototype), offline AI judge | `gemini-3.1-pro-preview` (preview only, no stable release) |
 | Text vectors for search | `gemini-embedding-001` (Phase1 says "verify") |
@@ -226,13 +225,13 @@ flowchart TD
 - **Revisit if:** nearly 100% of confirmations are "yes". Then make small deletes lighter.
 - **Data lives in:** Saved Reports in Postgres (prototype: SQLite). Soft delete with 30-day undo. Every action goes to the audit log.
 - **Source:** (Phase1 3.6). Friction by risk: one report needs y/N. A list needs "yes". "All" needs typing `DELETE 23`.
-### 3.7 Learning from each user: memory and personal style [DECIDED]
-- **Choice:** A Background Memory Agent reads finished turns from a task queue and fills a fixed profile schema (length, depth, charts, action items, format). Explicit rules save at once. Implicit signals count first.
-- **Why:** The schema keeps PII out. Signals fade (half weight every 14 days). Promotion needs a total of 2.5 and 80% agreement.
-- **Rejected:** Free-text memory (Mem0, LangMem); Vertex AI Memory Bank; a post-turn extractor node inside the graph (Phase1 3.7). The owner chose the background agent.
-- **Revisit if:** we adopt Vertex AI Agent Engine, or want a store with no operations work (Firestore), or the extra service costs more than the delay it saves.
-- **Data lives in:** Postgres tables `user_preferences`, `preference_signals`, `episodic_memory`, with row-level security. Design-only in the prototype.
-- **Source:** (memoryAgent 1-7, Phase1 3.7). Owner decision, 2026-10-22: background agent behind a queue. Each queue message carries an idempotency key, so a retry never writes a signal twice.
+### 3.7 Learning from each user: out of scope [DECIDED]
+- **Choice:** No memory agent. The agent does not learn preferences from past turns and does not build a user profile on its own. There is no per-user style at all (3.9).
+- **Why:** Owner decision, 2026-10-22: the memory agent is out of scope. The client Q&A had called it design-only; we now do not design it either.
+- **Rejected:** A Background Memory Agent behind a task queue (profile schema, signal scoring, episodic memory, Memory Store); free-text memory (Mem0, LangMem); Vertex AI Memory Bank; a post-turn extractor node inside the graph (Phase1 3.7).
+- **Revisit if:** the client asks for the user-level part of the Learning Loop (brief item 4.1) to be designed or built.
+- **Data lives in:** Nothing is learned or stored about a user's preferences.
+- **Source:** Owner decision, 2026-10-22. `memoryAgent.md` and Phase1 3.7 are no longer used.
 ### 3.8 Learning for the whole system: feedback, review, failure mining [PROPOSED]
 - **Choice:** Thumbs-up, saved reports and good runs become candidate trios. An analyst approves each one.
 - **Why:** No change goes live without a human. This blocks poisoned data and drift.
@@ -240,14 +239,13 @@ flowchart TD
 - **Revisit if:** analysts cannot keep up (they review a few dozen a week).
 - **Data lives in:** A candidate queue [NOT SPECIFIED], then Cloud Storage.
 - **Source:** (Phase1 3.3, 4; README-evaluation 12). Weekly failure mining proposes glossary entries and test cases.
-### 3.9 Changing the tone without redeploy [DECIDED]
-- **Choice:** Three layers: locked rules (git), company persona (registry), and "My style" for each user.
-- **Why:** A persona change touches only the Composer. It never reaches SQL writing, so it cannot break queries.
-- **Rejected:** Prompts in code or environment variables (they need a redeploy); free-text-only style.
-- **Revisit if:** [NOT SPECIFIED]
-- **Data lives in:** Postgres `persona_versions` (prototype: `personas/*.yaml` and `/persona`, `/style` commands).
-- **Who edits:** Any user with the `persona_editor` role edits. A second `persona_editor` approves. No team is named. The client assigns the role. (Owner decision, 2026-10-22)
-- **Source:** (Phase1 3.8, Phase1 6 row 11). Publish: validate, test on about 10 questions, approve, activate.
+### 3.9 Persona: one static file [DECIDED]
+- **Choice:** Two prompt layers: locked rules (git) and one static company persona, a plain file (`personas/default.yaml`: tone, sections, word limit). No persona editor, registry, versions, approval, rollback or per-user style.
+- **Why:** Owner decision, 2026-10-22: persona management is out of scope. The persona touches only the Composer. It never reaches SQL writing, so it cannot break queries.
+- **Rejected:** A Persona Registry with an admin UI, drafts, tests, second-editor approval and rollback (Phase1 3.8); a per-user "My style"; prompts in environment variables.
+- **Revisit if:** the client wants non-developers to change the tone on their own (brief item 8).
+- **Data lives in:** `personas/default.yaml` in git. Changing the tone is a normal code change. The prototype re-reads the file when it changes, so a hand edit shows in the next answer.
+- **Source:** Owner decision, 2026-10-22. Phase1 3.8 and Phase1 6, row 11 are no longer used.
 ### 3.10 Agent loop: limits, saved state, duplicate protection [PROPOSED]
 - **Choice:** At most 4 sub-questions per turn. Each gets 1 attempt plus 2 repairs. `max_replans` defaults to 1 (prototype: 0). One active run per conversation.
 - **Why:** Code stops each loop: tries, Budget, timeout, same SQL twice, same error twice. Budget per simple turn: about 8 calls, about 60 s.
@@ -261,7 +259,7 @@ flowchart TD
 - **Rejected:** One generic retry for every error.
 - **Note:** The loop-engineering PNG flagged a missing failed-job queue and a missing "same error twice" stop. Phase1 3.11 now has both.
 - **Revisit if:** fallback rates or cost per question grow. Cost levers: Flash-Lite, caches, daily budgets, kill switch.
-- **Source:** (Phase1 3.11). On failure, access rules block. Memory, persona, style and telemetry continue with defaults.
+- **Source:** (Phase1 3.11). On failure, access rules block. Persona and telemetry continue with defaults.
 
 | What happened | What the system does |
 |---|---|
@@ -318,7 +316,7 @@ flowchart TD
 | NFR20 | Alerts | Alert on any PII at output | [PROPOSED] | Phase1 3.9 |
 | NFR21 | How long we keep data | Audit log 1 year. Transcripts and checkpoints 90 days, without PII. | [PROPOSED] | Phase1 6, row 12, 3.15 |
 | NFR22 | Traces and logs kept | [NOT SPECIFIED] | [NOT SPECIFIED] | None |
-| NFR23 | Persona change | No redeploy. Rollback in one click. | [DECIDED] | Brief R8 |
+| NFR23 | Persona change | Out of scope (owner decision, 2026-10-22). One static persona file; a tone change is a code change. | [DECIDED] | Brief R8 |
 | NFR24 | New tool | No graph change | [PROPOSED] | Phase1 3.12 |
 | NFR25 | Release safety | 5% of traffic first, automatic rollback | [PROPOSED] | Phase1 3.10 |
 | NFR26 | Answer quality | Not below baseline minus a tolerance [NOT SPECIFIED] | [OPEN] | README-evaluation 6 |
@@ -337,9 +335,9 @@ flowchart TD
 | A7 | Production uses Vertex AI in the US | Phase1 6, row 8 | Data rules and costs change | Q18 |
 | A8 | About 50 users and 99.5% availability | Phase1 6, row 9 | Sizing changes | Q30 |
 | A9 | Production trios: one per line, up to about 10k, in English. Analysts review a few dozen weekly. | Phase1 6, row 10 | Index changes, or the learning loop stalls | Q9, Q19 |
-| A10 | Any `persona_editor` edits the persona, and a second editor approves. Owner decision. | Phase1 6, row 11 | Approval flow changes | Q26 |
+| A10 | Withdrawn (owner decision, 2026-10-22): there is no persona editing or approval flow. | Phase1 6, row 11 | None | Q26 |
 | A11 | Transcripts 90 days, audit log 1 year | Phase1 6, row 12 | Storage and privacy rules change | Q17 |
-| A12 | Every role gets "My style" with no approval | Phase1 6, row 13 | Settings design changes | None |
+| A12 | Withdrawn (owner decision, 2026-10-22): there is no per-user "My style". | Phase1 6, row 13 | None | None |
 | A13 | The dataset is synthetic, so free-tier Gemini terms are fine | Phase1 3.2 | Real data would need Vertex AI | Q18 |
 | A14 | The listed Gemini model IDs exist at build time | Phase1 intro | Routing config breaks | Q10 |
 | A15 | Confirmed: the Golden Bucket does not exist. We seed a small set of our own trios. | Client Q&A | None, the client confirmed it | Q9 |
@@ -362,12 +360,9 @@ flowchart TD
 | Candidate queue | [NOT SPECIFIED] -> none | PII removed | Feedback -> analyst review | [NOT SPECIFIED] |
 | Access rules (roles, brands) | Login token (client) or Postgres (Phase1) -> `users.yaml` | User identity only | Frontend, admins -> Policy Context | [NOT SPECIFIED] |
 | Saved Reports | Cloud SQL Postgres -> SQLite | [NOT SPECIFIED] | Tool Router -> user | Soft delete, 30-day undo |
-| User preferences and style | Postgres `user_preferences` -> `users.yaml` | No (fixed schema) | Extractor, user -> Context Assembly | [NOT SPECIFIED] |
-| Preference signals | Postgres -> none | No | Extractor -> promotion job | Weight halves every 14 days |
-| Episodic memory | Postgres pgvector -> none | No (topics from SQL and plan) | Memory agent -> Context Assembly | "Old ones expire" |
 | Conversation state | Postgres checkpoints -> SQLite | Yes (questions, drafts) | Graph -> graph | 90 days |
 | Transcripts | [NOT SPECIFIED] | PII removed | [NOT SPECIFIED] | 90 days |
-| Persona config | Postgres `persona_versions` -> `personas/*.yaml` | No | Persona editors -> Context Assembly | [NOT SPECIFIED] |
+| Persona file | `personas/default.yaml` in git -> same | No | Developers -> Context Assembly | [NOT SPECIFIED] |
 | Traces | Langfuse, Cloud Trace -> local log file | [NOT SPECIFIED] | Every step -> developers | [NOT SPECIFIED] |
 | Metrics events | Pub/Sub, BigQuery -> `runs.jsonl` | [NOT SPECIFIED] | Every turn -> dashboards | [NOT SPECIFIED] |
 | Audit log | Cloud SQL Postgres, append-only [PROPOSED] -> SQLite | User hash | Tools -> admins | 1 year |
@@ -386,12 +381,12 @@ flowchart TD
 | 1 | Use Golden Bucket trios with BigQuery | Design-only | 3.3 | Full |
 | 2 | No PII, analysis only, own brands | Prototype | 3.4, 3.5 | Full |
 | 3 | Confirm before deleting saved reports | Prototype | 3.6 | Full |
-| 4.1 | Remember each user's preferences | Design-only | 3.7 | Full |
+| 4.1 | Remember each user's preferences | Out of scope (owner decision, 2026-10-22) | 3.7 | Not covered, by choice. |
 | 4.2 | System learns from past interactions | Design-only | 3.8 | Full |
 | 5 | Self-correct errors, survive outages, control cost | Prototype | 3.10, 3.11 | Full |
 | 6 | Evaluate quality, intent and user experience | Design-only | 3.13 | Full |
 | 7 | Metrics and debugging of failures | Prototype | 3.12 | Full |
-| 8 | Non-developers change tone without redeploy | Design-only | 3.9 | Full |
+| 8 | Non-developers change tone without redeploy | Out of scope (owner decision, 2026-10-22) | 3.9 | Not covered, by choice. One static persona file; a tone change is a code change. |
 ### 7.2 Deliverables
 - Architecture diagram: partial. It is text art, not Mermaid. The delete shortcut is missing.
 - Technical explanation: 2.1, 2.2, 2.3 and 2.5 exist. 2.4 (setup instructions and example run) is missing.
@@ -406,25 +401,23 @@ flowchart TD
 - Multi-step questions: covered by the Planner and replan.
 - Report with action items: covered by the Composer.
 ### 7.4 Beyond or against the brief
-- Beyond: memory agent, evalkit, Promptfoo, background workers, Model Armor, idempotency keys, failed-job queues.
-- Against: memoryAgent names "Claude 3.5 Sonnet" as an option. The brief prefers Gemini. The main diagram is not Mermaid.
+- Beyond: evalkit, Promptfoo, background workers, Model Armor, idempotency keys, failed-job queues.
+- Against: the main diagram is not Mermaid.
 - Possibly beyond: the Golden Ingest Job and the policy store. The client says another team owns ingestion (see Q39, Q40).
 ## 8. Prototype vs production
 | Production | Prototype stand-in |
 |---|---|
 | Cloud Run, login token with the user's brands | Typer and Rich CLI, `--user alice` from `users.yaml` with her brands |
 | LangGraph on Cloud Run | LangGraph in the same process |
-| Cloud SQL Postgres (checkpoints, reports, preferences, personas, audit) | SQLite (`SqliteSaver` plus app tables) |
+| Cloud SQL Postgres (checkpoints, reports, audit) | SQLite (`SqliteSaver` plus app tables) |
 | Golden Index, Cloud Storage bucket, ingest job, glossary | `golden/seed/*.yaml`, `glossary.yaml`, in-memory search (optional, "a nice touch") |
 | BigQuery authorized views and policy tags | sqlglot guard with scope rewrite and approved column list |
 | Cloud Sensitive Data Protection, Model Armor | Pattern-based PII scanner and column masking |
 | Vertex AI fallback | Flash to Flash-Lite fallback, plus `--chaos` flag (429s, timeouts, bad SQL) |
-| Persona registry, admin web form, "My style" settings | `personas/*.yaml`, `style:` block in `users.yaml`, `/persona` and `/style` commands |
 | OpenTelemetry to Langfuse and Cloud Trace; Pub/Sub metrics to BigQuery | Local span log, `runs.jsonl`, `/trace` and metrics commands, optional Phoenix |
 | Cloud Tasks background workers | Synchronous, with progress shown |
 | Idempotency keys, failed-job queues | Unique `idempotency_key` column and one pytest. Failed-job queues are design-only. |
 | Bounded replan | Off by default (`max_replans` = 0) |
-| Memory store | Design-only. Optional: profile schema and explicit capture only. |
 | Eval pipeline | Pytest for guards, PII scanner, confirmation flow; about 15 golden cases; `--chaos` runs |
 | Charts, email, web search | Design-only. The tool registry interface is real. |
 ## 9. Sanity check
@@ -485,16 +478,16 @@ This section is our own opinion, not a fact from the sources.
 | Q14 | **Setup:** What does the reviewer need to run the prototype? | Google Cloud project, Gemini key, `pip install` | Us | P0 |
 | Q15 | **Budget:** What is the daily budget per user? | Alert at 80%, amount from client | OpsFleet client | P1 |
 | Q16 | **Data:** Where do the glossary, candidate queue and secrets live? (Audit log: Cloud SQL Postgres, proposed) | Postgres for the glossary index. A secret store for keys. | Us | P1 |
-| Q17 | **Data:** Where do history and memory live? How does a user delete them? | Checkpoints 90 days. `forget` tool for memory. | OpsFleet client | P1 |
+| Q17 | **Data:** Where does history live? How does a user delete it? | Checkpoints 90 days. | OpsFleet client | P1 |
 | Q18 | **Deployment:** What is the production target and region? | Cloud Run, Cloud SQL, Vertex AI, US | OpsFleet client | P1 |
 | Q19 | **Evaluation:** Who builds and labels the golden test set and reference SQL? | Analysts, a few dozen items a week | OpsFleet client | P1 |
 | Q20 | **Evaluation:** What are the pass and fail numbers for each gate? | Set from the first baseline run | Us | P1 |
 | Q21 | **Golden Bucket:** Do we filter trios by the user's brands? How do updates stay safe? | Yes. Analyst review, nightly re-check, no automatic promotion. | Us | P1 |
 | Q22 | **Loop:** What is the hard ceiling for `max_replans`? Does the cap of 4 cover reports? | Ceiling 2. Cap of 4 covers reports. | Us | P1 |
 | Q23 | **Loop:** Do we add the turn ID to the idempotency key? | Answer: yes | Us | Answered |
-| Q24 | **Memory:** Background agent or graph node? Topics from free text, or from SQL and plan? | Answer: background agent behind a queue. Still open: topics from SQL and plan (default). | Us | P1 |
+| Q24 | **Memory:** Do we build a memory agent? | Answer: no. Out of scope (owner decision, 2026-10-22). | Us | Answered |
 | Q25 | **Observability:** Which metrics and alert limits? How long are logs kept? (Tool answered: Langfuse) | Alert on any PII, 90 days, mask PII before writing | OpsFleet client | P1 |
-| Q26 | **Persona:** How do versions and rollback work? (Who edits answered: `persona_editor` role, second editor approves) | Versions in `persona_versions`, one-click rollback | OpsFleet client | P1 |
+| Q26 | **Persona:** How do versions, rollback and editing work? | Answer: they do not exist. One static persona file (owner decision, 2026-10-22). | Us | Answered |
 | Q27 | **PII:** What is the row cap for the model? | 50 rows | Us | P1 |
 | Q28 | **Resilience:** What are the retry limits and the 429 rules for the free tier? | Limits in config, longer waits per retry, Flash to Flash-Lite | Us | P1 |
 | Q29 | **Safety:** Can text stream before the Output Guard? What if the numeric check fails? | Stream progress only. Remove the number and say so. | Us | P1 |
@@ -506,14 +499,14 @@ This section is our own opinion, not a fact from the sources.
 | Q35 | **Loop:** Do we flag failed questions to analysts and label low-confidence answers? | Label yes, flag later | Us | P2 |
 | Q36 | **Loop:** How do we detect a "simple" question to skip the Planner? | Use the Input Guard intent | Us | P2 |
 | Q37 | **Loop:** Do we add a "find entities first" step before parallel sub-queries? | No, not in the prototype | Us | P2 |
-| Q38 | **Memory:** Are the promotion numbers right (2.5 total, 80% agree, 14 days)? | Use them, tune on real use | Us | P2 |
+| Q38 | **Memory:** Are the promotion numbers right? | Answer: not needed. There is no memory agent (see Q24). | Us | Answered |
 | Q39 | **Access:** Does the login token replace the Postgres access-rules table, or do we keep both? | The token is the only source of brands | Us | P1 |
 | Q40 | **Scope:** Does "ingestion is out of scope" also cover the Golden Ingest Job? | No. Keep a short Golden update design, because requirement 1 asks for it. | OpsFleet client | P1 |
 | Q41 | **Access:** In mixed orders, does the brand filter apply per item? Do order totals cover only the user's brands? | Yes to both, and answers say so | OpsFleet client | P1 |
-| Q42 | **Access:** Which roles exist besides brand manager and CEO (analyst, persona editor, admin)? | The four Phase1 roles plus CEO | OpsFleet client | P2 |
+| Q42 | **Access:** Which roles exist besides brand manager and CEO (analyst, admin)? | Analyst and admin, plus CEO | OpsFleet client | P2 |
 | Q43 | **Golden Bucket:** Which fields does our trio format have? | Question, SQL, report, notes, tables, brands, status, version | Us | P1 |
 ## 11. Next documents
-- The PRD should use: sections 1, 3.6, 3.7, 3.9, 4, 5, 7, and the OpsFleet client questions in section 10.
+- The PRD should use: sections 1, 3.6, 3.9, 4, 5, 7, and the OpsFleet client questions in section 10.
 - The architecture document should use: sections 2, 3, 4, 5, 6, 8 and 9.
-- Questions to answer before the PRD: Q5, Q6, Q10, Q11, Q15, Q26, Q30, Q41.
+- Questions to answer before the PRD: Q5, Q6, Q10, Q11, Q15, Q30, Q41.
 - Questions to answer before the architecture document: Q3, Q4, Q7, Q8, Q12 to Q14, Q16 to Q25, Q27 to Q29, Q39, Q40, Q42, Q43.
