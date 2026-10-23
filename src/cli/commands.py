@@ -18,8 +18,9 @@ from src.observability import Tracer, TurnTrace, alerts, span, viewer
 from src.personas import PersonaStore
 from src.storage.db import Database, turn_id
 
-if TYPE_CHECKING:  # annotation only: importing it would load BigQuery and pandas for every CLI command
+if TYPE_CHECKING:  # annotations only: importing them would load BigQuery, pandas and the Google SDK for every CLI command
     from src.data_access.catalog import SchemaCatalog
+    from src.llm.chaos import Chaos
 
 log = logging.getLogger(__name__)
 
@@ -34,8 +35,9 @@ class ChatSession:
     renderer: Renderer
     conversation_id: str
     debug: bool = False
-    chaos: str | None = None  # plan 04
-    chaos_seed: int | None = None  # plan 04
+    chaos: str | None = None  # the --chaos level; the `chaos: true` flag of the metrics row
+    chaos_seed: int | None = None  # the seed actually used, drawn when --chaos-seed was not given
+    chaos_engine: Chaos | None = None  # plan 04: plan 07 hands it to the gateway, the SQL writer node and SafeQueryRunner
     turn_count: int = 0  # turns so far in this conversation, stored in the database
     personas: PersonaStore | None = None  # None when persona.enabled is false
     persona_name: str | None = None

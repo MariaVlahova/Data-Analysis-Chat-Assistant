@@ -23,6 +23,7 @@ from src.config import Settings
 from src.data_access.bq_client import BigQueryRunner
 from src.data_access.errors_map import Phase, classify, job_may_still_run, setup_error
 from src.errors import AgentError, ErrorKind, crash_summary
+from src.llm.budget import call_timeout
 from src.observability import current_trace_id, guard_decision, span, turn_metrics
 from src.observability.tracing import Span
 
@@ -41,7 +42,6 @@ RETRY_CAP_S = 8.0
 # after the client timeout, so the client normally gives up first and cancels the job itself.
 JOB_TIMEOUT_GRACE_S = 5.0
 CANCEL_TIMEOUT_S = 5.0
-MIN_CALL_TIMEOUT_S = 0.1  # the least a call is given when the turn is almost out of time
 
 
 class QueryLike(Protocol):
@@ -62,6 +62,12 @@ class BudgetLike(Protocol):
     def check_time(self) -> None: ...
 
     def remaining_seconds(self) -> float: ...
+
+
+class FaultSource(Protocol):
+    """What the runner needs from plan 04's `Chaos` (`--chaos`): an exception to fail the next call with, or None."""
+
+    def maybe_fail_bq(self) -> BaseException | None: ...
 
 
 @dataclass(frozen=True)
@@ -126,6 +132,12 @@ def job_labels() -> dict[str, str]:
     return {"app": APP_LABEL, "env": ENV_LABEL, "user": user, "trace": trace, "kind": kind}
 
 
+def _faultable(gq: QueryLike) -> bool:
+    """Chaos hits the queries the agent runs for a question. A `SystemQuery` (startup brand list, latest date, `doctor`)
+    is our own fixed SQL that the chat needs in order to start, so it is never faulted."""
+    return not isinstance(gq, SystemQuery)
+
+
 def _param_names(gq: QueryLike) -> list[str]:
     return [str(getattr(param, "name", "?")) for param in gq.params]
 
@@ -138,6 +150,7 @@ class SafeQueryRunner:
         *,
         sleep: Callable[[float], None] = time.sleep,
         jitter: Callable[[], float] = random.random,
+        chaos: FaultSource | None = None,
     ) -> None:
         self._settings = settings
         self._config = settings.bigquery
@@ -145,6 +158,7 @@ class SafeQueryRunner:
         self._lock = threading.Lock()  # several metadata reads run at once at startup; the client is made once
         self._sleep = sleep
         self._jitter = jitter
+        self._chaos = chaos  # `--chaos` (plan 04): faults replace a dry run or a job call and are retried like real ones
 
     @property
     def _bq(self) -> BigQueryRunner:
@@ -188,7 +202,9 @@ class SafeQueryRunner:
         self._require_accepted(gq)
         with span("bq.dry_run", "query", sql=gq.sql, param_names=_param_names(gq)) as sp:
             self._check_time(budget)
-            job = self._attempt(lambda: self._start_dry_run(gq, self._call_timeout(budget)), "dry_run", sp, budget)
+            job = self._attempt(
+                lambda: self._start_dry_run(gq, self._call_timeout(budget)), "dry_run", sp, budget, faultable=_faultable(gq)
+            )
             statement = getattr(job, "statement_type", None)
             sp.set(statement_type=statement)
             # BigQuery's own parse backs up the SQL Guard: only a plain SELECT runs. A type that is missing counts as
@@ -221,10 +237,7 @@ class SafeQueryRunner:
 
     def _call_timeout(self, budget: BudgetLike | None) -> float:
         """The time one BigQuery call may take: the configured timeout, or what is left of the turn if that is less."""
-        timeout = self._config.query_timeout_s
-        if budget is None:
-            return timeout
-        return max(min(timeout, budget.remaining_seconds()), MIN_CALL_TIMEOUT_S)
+        return call_timeout(self._config.query_timeout_s, budget)
 
     def _gate(self, processed: int, budget: BudgetLike | None) -> None:
         cap = self._config.max_bytes_billed
@@ -255,7 +268,7 @@ class SafeQueryRunner:
             try:
                 job, rows, df = self._attempt(
                     lambda: self._execute(gq, row_cap, self._call_timeout(budget), info.bytes_processed, abandoned),
-                    "query", sp, budget,
+                    "query", sp, budget, faultable=_faultable(gq),
                 )
             finally:
                 self._account_abandoned(abandoned, budget, sp)
@@ -335,13 +348,22 @@ class SafeQueryRunner:
     # retries -------------------------------------------------------------------------------------
 
     def _attempt(
-        self, operation: Callable[[], T], phase: Phase, sp: Span | None = None, budget: BudgetLike | None = None
+        self, operation: Callable[[], T], phase: Phase, sp: Span | None = None, budget: BudgetLike | None = None,
+        *, faultable: bool = False,
     ) -> T:
         """Run `operation`. A BigQuery failure becomes an `AgentError`; a transient one is retried with growing
-        waits and jitter (brief R5). This is the only retry loop: the library's own retries are switched off."""
+        waits and jitter (brief R5). This is the only retry loop: the library's own retries are switched off.
+
+        `faultable`: `--chaos` may replace the call with an injected fault. Only the agent's own queries are (see
+        `_faultable`); startup and `doctor` reads never are, because the chat must be able to start."""
         attempt = 0
         while True:
             try:
+                fault = self._chaos.maybe_fail_bq() if self._chaos is not None and faultable else None
+                if fault is not None:
+                    if sp is not None:
+                        sp.set(chaos_fault=getattr(fault, "chaos_fault", "unknown"))
+                    raise fault
                 return operation()
             except Exception as exc:  # noqa: BLE001
                 err = classify(exc, phase)

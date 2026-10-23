@@ -20,6 +20,7 @@ from src.cli.doctor import DoctorContext, render_checks, run_checks
 from src.cli.render import Renderer
 from src.config import Settings, load_settings
 from src.errors import AgentError, ConfigError, ErrorKind, crash_summary, friendly, new_trace_id
+from src.llm.chaos import Chaos  # light: the Google SDK loads only with src.llm.gateway
 from src.logging_setup import setup_logging, shutdown_logging
 from src.observability import Tracer, purge_old_traces, viewer
 from src.personas import PersonaStore
@@ -71,6 +72,11 @@ def open_session(
     debug_prompts: bool = False,
 ) -> ChatSession:
     """Everything that must be right before a chat can start. Raises ConfigError for a startup problem."""
+    if chaos_seed is not None and chaos is None:
+        raise ConfigError("--chaos-seed has no effect without --chaos.", fix="Add --chaos mild or --chaos harsh, or leave out --chaos-seed.")
+    chaos_engine = None
+    if chaos is not None:
+        chaos_engine = Chaos.from_level(chaos.value, chaos_seed)  # without a seed one is drawn; it is shown in the banner
     settings = load_settings(config)
     setup_logging(settings, debug)
     removed = purge_old_traces(settings.traces_path, settings.retention.trace_days)  # NFR22: 90 days by default
@@ -143,7 +149,8 @@ def open_session(
         turn_count=turn_count,
         debug=debug,
         chaos=chaos.value if chaos else None,
-        chaos_seed=chaos_seed,
+        chaos_seed=chaos_engine.seed if chaos_engine else None,
+        chaos_engine=chaos_engine,
         personas=personas,
         persona_name=persona_name,
         tracer=Tracer.from_settings(settings, debug_prompts=debug_prompts),
@@ -162,10 +169,16 @@ def _open_personas(settings: Settings) -> tuple[PersonaStore | None, str | None]
 def banner(session: ChatSession) -> str:
     user = session.user
     scope = "all brands" if user.scope_mode == "all" else "brands: " + ", ".join(user.brands)
-    return (
+    text = (
         f"Hi {user.display_name} ({user.role}). You can see {scope}.\n"
         f"Conversation {session.conversation_id}. Type /help for commands, /quit to leave."
     )
+    if session.chaos:
+        # Plan 07 connects the engine to the gateway and the query runner. Until then nothing consumes it, and the text says so.
+        text += (f"\nChaos mode {session.chaos} is on (seed {session.chaos_seed}), but the agent that receives the faults is "
+                 f"not connected yet (plan 07), so nothing is injected in this version. "
+                 f"Replay a run with --chaos {session.chaos} --chaos-seed {session.chaos_seed}.")
+    return text
 
 
 def chat_loop(session: ChatSession, turn_fn: TurnFn | None = None) -> None:
@@ -230,8 +243,9 @@ def chat(
 def doctor(
     config: Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml.")] = None,
     refresh: Annotated[bool, typer.Option("--refresh", help="Read the BigQuery schema and brand list again instead of using the saved copy.")] = False,
+    live: Annotated[bool, typer.Option("--live", help="Also call Gemini: check the model IDs and make one small call (uses a little free-tier quota).")] = False,
 ) -> None:
-    """Check the setup: Python, packages, config, users, keys, credentials, the database and BigQuery."""
+    """Check the setup: Python, packages, config, users, keys, credentials, the database, BigQuery and (with --live) Gemini."""
     renderer = Renderer()
     try:
         settings, error = load_settings(config), None
@@ -242,7 +256,7 @@ def doctor(
     try:
         if settings is not None:
             setup_logging(settings)  # the BigQuery checks log to the masked app.log, not to the screen
-        checks = run_checks(DoctorContext(settings=settings, config_error=error, refresh=refresh))
+        checks = run_checks(DoctorContext(settings=settings, config_error=error, refresh=refresh, live=live))
     finally:
         shutdown_logging()
     render_checks(renderer, checks)

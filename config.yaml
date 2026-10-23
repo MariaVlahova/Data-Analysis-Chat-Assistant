@@ -50,6 +50,9 @@ llm:                                 # plan 04 owns these keys
   rate_limits: {}                    # per model: {gemini-3.8-flash: {rpm: 15}}
   retry: {base_s: 1.0, cap_s: 20.0, attempts: 3}
   breaker: {failure_threshold: 3, cooldown_s: 30.0}
+  request_timeout_s: 30.0            # one Gemini attempt; the turn's remaining time wins if it is less
+  # steps:                           # per step: temperature and max_output_tokens. The defaults live in src/llm_steps.py
+  #   composer: {max_output_tokens: 8192}   # (temperature 0 everywhere but the Composer's 0.3; a setting you leave out keeps its default)
   pricing_usd_per_1m: null           # plan 02 cost estimate. Fill from the Google pricing page: {gemini-3.8-flash: {in: 0.0, out: 0.0}}. null: cost_usd stays null
 
 delete:

@@ -741,3 +741,73 @@ def test_the_dry_run_result_carries_only_what_can_vary():
     import dataclasses
 
     assert [f.name for f in dataclasses.fields(safe_runner.DryRunInfo)] == ["bytes_processed"]
+
+
+# chaos (plan 04, F37) ---------------------------------------------------------------------------------------------------
+
+def chaos_runner(client, tmp_path, sleeps, chaos) -> SafeQueryRunner:
+    return SafeQueryRunner(make_settings(tmp_path), FakeRunner(client), sleep=sleeps.append, jitter=lambda: 1.0, chaos=chaos)
+
+
+def test_an_injected_outage_is_retried_with_the_same_waits_as_a_real_one(client, tmp_path, sleeps):
+    from src.llm.chaos import BqFault, Chaos
+
+    chaos = Chaos.scripted().fail_bq(BqFault.UNAVAILABLE, times=2)
+    outcome = chaos_runner(client, tmp_path, sleeps, chaos).run(Query())
+    assert outcome.total_rows == 1 and sleeps == [1.0, 2.0]  # the same growing waits as a transient BigQuery failure
+    assert chaos.injected == ["bq:unavailable", "bq:unavailable"]
+
+
+def test_an_outage_that_does_not_end_is_bq_unavailable_and_starts_no_job(client, tmp_path, sleeps):
+    from src.llm.chaos import BqFault, Chaos
+
+    chaos = Chaos.scripted().fail_bq(BqFault.TIMEOUT, times=99)  # in the dry run a timeout means BigQuery does not answer
+    with pytest.raises(AgentError) as err:
+        chaos_runner(client, tmp_path, sleeps, chaos).run(Query())
+    assert err.value.kind == ErrorKind.BQ_UNAVAILABLE and client.jobs == []
+
+
+def test_an_injected_timeout_while_the_query_runs_is_a_query_timeout(client, tmp_path, sleeps):
+    class FailOnTheSecondCall:  # the first call is the dry run, the second is the real job
+        calls = 0
+
+        def maybe_fail_bq(self):
+            self.calls += 1
+            return TimeoutError("injected") if self.calls == 2 else None
+
+    with pytest.raises(AgentError) as err:
+        chaos_runner(client, tmp_path, sleeps, FailOnTheSecondCall()).run(Query())
+    assert err.value.kind == ErrorKind.QUERY_TIMEOUT and sleeps == []
+
+
+def test_the_startup_schema_read_is_never_faulted(client, tmp_path, sleeps):
+    from src.llm.chaos import BqFault, Chaos
+
+    chaos = Chaos.scripted().fail_bq(BqFault.UNAVAILABLE, times=99)
+    assert chaos_runner(client, tmp_path, sleeps, chaos).get_table("orders") is not None
+    assert chaos.injected == []
+
+
+def test_an_injected_fault_is_marked_on_the_span(client, tmp_path, sleeps):
+    from src.llm.chaos import BqFault, Chaos
+
+    tracer = Tracer(tmp_path / "traces", tmp_path / "runs.jsonl")
+    chaos = Chaos.scripted().fail_bq(BqFault.UNAVAILABLE)
+    with tracer.start_turn("hash0001", "conv-1", "t-1", trace_id="0a1b2c3d", chaos=True):
+        chaos_runner(client, tmp_path, sleeps, chaos).run(Query())
+    spans = spans_of(tracer, "0a1b2c3d")
+    assert span_named(spans, "bq.dry_run")["attrs"]["chaos_fault"] == "unavailable"
+    assert read_runs(tracer.metrics_file)[0][0]["chaos"] is True and read_runs(tracer.metrics_file)[0][0]["error_kinds"] == []
+
+
+def test_our_own_startup_queries_are_never_faulted_only_the_agents_queries_are(client, tmp_path, sleeps):
+    """Review finding: chaos was withheld by phase, so the startup brand list and the A23 count could be faulted and the chat
+    could not start. The rule is by query type: a SystemQuery is our fixed SQL, never faulted."""
+    from src.llm.chaos import BqFault, Chaos
+
+    chaos = Chaos.scripted().fail_bq(BqFault.UNAVAILABLE, times=99)
+    outcome = chaos_runner(client, tmp_path, sleeps, chaos).run(SystemQuery(SELECT_ONE))
+    assert outcome.total_rows == 1 and chaos.injected == [] and sleeps == []
+    with pytest.raises(AgentError):  # the agent's own query (here the stand-in for a guarded one) is faulted
+        chaos_runner(client, tmp_path, sleeps, chaos).run(Query())
+    assert chaos.injected  # and the fault was injected
