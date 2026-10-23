@@ -1,7 +1,7 @@
 """Typer + Rich CLI: `python -m src.cli.main chat --user alice`.
 
-Exit codes: 0 normal, 1 a failed `doctor` check or an unexpected startup crash, 2 a startup problem
-(bad config, unknown user, no access, failed database setup). Startup problems print one clear
+Exit codes: 0 normal, 1 a failed `doctor` check, a `trace` ID that was not found or an unexpected startup
+crash, 2 a startup problem (bad config, unknown user, no access, failed database setup). Startup problems print one clear
 sentence and the fix. Traces never reach the screen unless `--debug`.
 """
 from __future__ import annotations
@@ -21,6 +21,7 @@ from src.cli.render import Renderer
 from src.config import Settings, load_settings
 from src.errors import AgentError, ConfigError, ErrorKind, crash_summary, friendly, new_trace_id
 from src.logging_setup import setup_logging, shutdown_logging
+from src.observability import Tracer, purge_old_traces, viewer
 from src.personas import PersonaStore
 from src.storage.db import Database
 
@@ -67,10 +68,14 @@ def open_session(
     chaos: ChaosLevel | None,
     chaos_seed: int | None,
     conversation: str | None,
+    debug_prompts: bool = False,
 ) -> ChatSession:
     """Everything that must be right before a chat can start. Raises ConfigError for a startup problem."""
     settings = load_settings(config)
     setup_logging(settings, debug)
+    removed = purge_old_traces(settings.traces_path, settings.retention.trace_days)  # NFR22: 90 days by default
+    if removed:
+        log.info("deleted %d trace file(s) older than %d days", removed, settings.retention.trace_days)
 
     try:
         directory = load_users(settings)
@@ -121,6 +126,7 @@ def open_session(
         chaos_seed=chaos_seed,
         personas=personas,
         persona_name=persona_name,
+        tracer=Tracer.from_settings(settings, debug_prompts=debug_prompts),
     )
 
 
@@ -168,13 +174,15 @@ def chat(
     conversation: Annotated[Optional[str], typer.Option("--conversation", help="Continue an earlier conversation by its ID.")] = None,
     config: Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml (else $OPSFLEET_CONFIG, else ./config.yaml).")] = None,
     debug: Annotated[bool, typer.Option("--debug", help="Show log lines and tracebacks on screen.")] = False,
+    debug_prompts: Annotated[bool, typer.Option("--debug-prompts", help="Store prompt text (masked) in traces. Off by default.")] = False,
 ) -> None:
     """Start a chat for a user."""
     renderer = Renderer()
     session: ChatSession | None = None
     try:
         session = open_session(
-            renderer, user, config, debug=debug, chaos=chaos, chaos_seed=chaos_seed, conversation=conversation
+            renderer, user, config, debug=debug, chaos=chaos, chaos_seed=chaos_seed, conversation=conversation,
+            debug_prompts=debug_prompts,
         )
         renderer.banner(banner(session))
         chat_loop(session)
@@ -183,7 +191,7 @@ def chat(
         raise typer.Exit(2) from None
     except Exception as exc:  # noqa: BLE001 - the interface never crashes (NFR19)
         trace_id = new_trace_id()
-        # Class and location only: the exception text can carry data and nothing masks it yet.
+        # Class and location only: the exception text can carry data that no masking pattern catches.
         log.error("chat crashed trace_id=%s %s", trace_id, crash_summary(exc))
         renderer.error(friendly(AgentError(ErrorKind.INTERNAL, STARTUP_CRASH_MESSAGE, trace_id=trace_id)))
         if debug:
@@ -215,6 +223,38 @@ def doctor(
         shutdown_logging()
     render_checks(renderer, checks)
     raise typer.Exit(1 if any(c.status == "fail" for c in checks) else 0)
+
+
+# metrics and trace (read-only, for the operator) ------------------------------------------------
+
+def _load_settings_or_exit(renderer: Renderer, config: Path | None) -> Settings:
+    try:
+        return load_settings(config)
+    except ConfigError as exc:
+        renderer.startup_problem(exc.message, exc.fix)
+        raise typer.Exit(2) from None
+
+
+@app.command()
+def metrics(
+    last: Annotated[Optional[int], typer.Option("--last", min=1, help="Only the last N turns.")] = None,
+    config: Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml.")] = None,
+) -> None:
+    """Show totals and rates from runs.jsonl, and the month's BigQuery use against the free tier."""
+    renderer = Renderer()
+    viewer.show_metrics(renderer.console, _load_settings_or_exit(renderer, config), last)
+
+
+@app.command()
+def trace(
+    trace_id: Annotated[Optional[str], typer.Argument(help="The 8-character trace ID. Default: the last turn.")] = None,
+    raw: Annotated[bool, typer.Option("--raw", help="Print the stored spans as JSON.")] = False,
+    config: Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml.")] = None,
+) -> None:
+    """Show the steps of one turn by its trace ID (any user: this is the operator view)."""
+    renderer = Renderer()
+    found = viewer.show_trace(renderer.console, _load_settings_or_exit(renderer, config), trace_id, raw=raw)
+    raise typer.Exit(0 if found else 1)
 
 
 if __name__ == "__main__":

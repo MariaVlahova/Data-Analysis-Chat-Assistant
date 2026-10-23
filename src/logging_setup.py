@@ -1,16 +1,16 @@
 """File logging for the app. The console shows no log lines unless `--debug`.
 
 Handlers and the level go on the application logger `src`, never on the root logger, so other
-libraries (httpx, google-auth, langgraph) stay out of `app.log` and its future PII filter.
-Plan 02 adds the masking filter to this logger.
+libraries (httpx, google-auth, langgraph) stay out of `app.log` and its PII filter.
+Every handler carries the PII masking filter (plan 02), so no line is written unmasked.
 """
 from __future__ import annotations
 
 import logging
 import sys
-from logging.handlers import RotatingFileHandler
 
 from src.config import Settings
+from src.observability.logging_setup import PIIMaskingFilter, make_file_handler
 
 APP_LOGGER = "src"
 _FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
@@ -26,7 +26,7 @@ def setup_logging(settings: Settings, debug: bool = False) -> None:
     handlers: list[logging.Handler] = []
     try:
         settings.log_path.parent.mkdir(parents=True, exist_ok=True)
-        handlers.append(RotatingFileHandler(settings.log_path, maxBytes=1_000_000, backupCount=3, encoding="utf-8"))
+        handlers.append(make_file_handler(settings.log_path))
     except OSError:
         pass  # logging must never stop the app
     if debug:
@@ -36,6 +36,7 @@ def setup_logging(settings: Settings, debug: bool = False) -> None:
 
     for handler in handlers:
         handler.setFormatter(logging.Formatter(_FORMAT))
+        handler.addFilter(PIIMaskingFilter())
         setattr(handler, _OWNED, True)
         logger.addHandler(handler)
 

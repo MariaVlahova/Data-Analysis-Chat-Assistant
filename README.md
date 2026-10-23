@@ -3,8 +3,9 @@
 A chat agent that answers business questions about the `bigquery-public-data.thelook_ecommerce` dataset.
 Brand managers see only their own brands; the CEO sees all of them.
 
-> **Status:** plan 01 (foundation) is done: project skeleton, config, users, storage and the CLI shell.
-> The chat currently **echoes** your question. The agent behind it arrives with plans 03 to 07.
+> **Status:** plans 01 (foundation) and 02 (observability) are done: project skeleton, config, users, storage, the CLI
+> shell, and tracing, masked logs and metrics. The chat currently **echoes** your question. The agent behind it
+> arrives with plans 03 to 07.
 > This README holds the setup section only. Plan 11 completes it (architecture, example run, limits).
 
 ## Prerequisites
@@ -51,13 +52,23 @@ python -m src.cli.main chat --user alice --debug    # log lines and tracebacks o
 python -m src.cli.main chat --user alice --conversation conv-1a2b3c4d   # continue a conversation
 ```
 
-Inside the chat: `/help`, `/quit`, `/new` (new conversation), `/trace` and `/metrics` (arrive with plan 02).
+Inside the chat: `/help`, `/quit`, `/new` (new conversation), `/trace [id] [--raw]` (the steps of a turn, by default
+the last one) and `/metrics [--last N]` (totals and rates). You see your own turns; the CEO sees everyone's.
+Every error message ends with a trace ID. Outside the chat, the operator views (all users) are
+`python -m src.cli.main trace [ID]` and `python -m src.cli.main metrics [--last N]`.
+
+Traces, logs and metrics are masked on a **best-effort** basis. A pattern scan replaces emails, phone numbers,
+US social security and employer tax IDs, and card numbers before anything is written. It does **not** find names,
+street addresses or a bare customer ID, so the design also keeps result rows, DataFrames, cell values and exception
+messages out of them, and people appear only as a hash. The question you type is stored (masked) in the trace. Prompts
+are not stored unless you start the chat with `--debug-prompts` (still masked). Trace files are deleted after 90 days
+(`retention.trace_days`); `runs.jsonl` rows hold counts and IDs only and are kept.
 
 The answer tone comes from one static persona file, `personas/default.yaml`. Set `persona.enabled: true` in
 `config.yaml` to use it. There is no persona editor, no per-user style and no switching.
 
 Exit codes: `0` normal, `2` a startup problem (bad config, unknown user, no brands, database problem),
-`1` a failed `doctor` check.
+`1` a failed `doctor` check or a `trace` ID that was not found.
 
 ## Users and brands (`users.yaml`)
 
@@ -77,6 +88,6 @@ Tests use temporary folders and never read the real `users.yaml` or write to `da
 
 ## Runtime files
 
-Everything the app writes goes to `data/` (git-ignored): `db.sqlite3`, `logs/app.log`, `user_hash_salt`, and later
-`runs.jsonl` and `traces/`. If `data/db.sqlite3` was made by an older prototype, the app refuses to use it and tells
+Everything the app writes goes to `data/` (git-ignored): `db.sqlite3`, `logs/app.log` (rotating, masked),
+`user_hash_salt`, `runs.jsonl` (one metrics row per question) and `traces/` (one file per question). If `data/db.sqlite3` was made by an older prototype, the app refuses to use it and tells
 you to move or delete it.

@@ -115,6 +115,18 @@ def test_guard_violation_carries_a_rule_id_and_a_custom_message():
     assert "I can't show email addresses." in friendly(err, "aaaa0000")
 
 
+def test_the_detail_is_masked_before_it_is_cut_so_no_half_email_survives():
+    # The email straddles the 300-character cut: cutting first would leave "john.doe@exampl", which no pattern matches.
+    err = AgentError(ErrorKind.SQL_SYNTAX, detail="x" * 284 + " john.doe@example.com tail")
+    assert "john" not in err.detail and "@" not in err.detail
+    assert "[EMAIL_MASKED]" in err.detail and len(err.detail) <= 300  # whole token kept, the cut falls after it
+
+
+def test_a_detail_with_pii_stays_masked_after_a_copy():
+    err = AgentError(ErrorKind.TOOL_FAILED, detail="failed for canary@example.test")
+    assert pickle.loads(pickle.dumps(err)).detail == err.detail == "failed for [EMAIL_MASKED]"
+
+
 def test_trace_ids_are_short_and_different():
     ids = {new_trace_id() for _ in range(50)}
     assert len(ids) == 50

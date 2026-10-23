@@ -88,7 +88,7 @@ Default keys. The last column names the plan that reads the key.
 | `delete.large_batch_threshold` | 10 | (impl) | 08 |
 | `delete.undo_days` | 30 | [PROPOSED] NFR17 | 08 |
 | `retention.audit_days / checkpoint_days / trace_days` | 365 / 90 / 90 | [PROPOSED] NFR21; trace days [NOT SPECIFIED], Q25 default | 02, 08 |
-| `observability.metrics_file / traces_dir` | `data/runs.jsonl` / `data/traces` | | 02 |
+| `observability.metrics_file / traces_dir` | `null` / `null`: `runs.jsonl` and `traces/` inside `app.data_dir` (set a path only to move them) | changed in plan 02 | 02 |
 | `golden.enabled / top_k / min_similarity` | `false` / 3 / 0.25 | | 10 |
 | `persona.enabled / default` | `false` / `default` | | 01 |
 

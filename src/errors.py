@@ -12,6 +12,8 @@ from enum import Enum
 from pathlib import Path
 from typing import NamedTuple
 
+from src import pii
+
 
 class ErrorKind(str, Enum):
     INPUT_REJECTED = "INPUT_REJECTED"
@@ -48,6 +50,9 @@ class _Spec(NamedTuple):
     retryable: bool = False   # transient: the same call may work if repeated
     repairable: bool = False  # the graph can loop back and fix the input (SQL repair, broaden)
 
+
+# A refusal is not a failure: shown in a "not possible" panel and counted as `refused` in the metrics (F7, F32).
+REFUSAL_KINDS = frozenset({ErrorKind.OUT_OF_SCOPE, ErrorKind.GUARD_VIOLATION, ErrorKind.INPUT_REJECTED})
 
 _NARROW = "Try a narrower question, for example a shorter time range or one brand or category."
 
@@ -113,8 +118,9 @@ class AgentError(Exception):
         self.user_message = user_message or spec.message
         self.retryable = spec.retryable if retryable is None else retryable
         self.repairable = spec.repairable if repairable is None else repairable
-        # Short and for traces only. Plan 02 adds PII masking before it is stored.
-        self.detail = detail[:_MAX_DETAIL]
+        # Short and for traces only. Masked first, then cut: cutting first could leave half an email that no
+        # pattern matches. Every reader of `detail` (trace, log, doctor) gets the masked text.
+        self.detail = pii.mask(detail)[:_MAX_DETAIL]
         self.trace_id = trace_id
         self.rule_id = rule_id  # GUARD_VIOLATION carries the rule that fired (F32)
         super().__init__(f"{kind.value}: {self.detail or self.user_message}")
@@ -129,7 +135,7 @@ class AgentError(Exception):
         """Wrap any unexpected exception as INTERNAL. An AgentError passes through.
 
         The detail is the exception class and where it happened, never the exception text, which can
-        carry data (a filter value, a path). Plan 02 adds masking before anything richer is stored.
+        carry data (a filter value, a path) that no masking pattern catches. The trace stores the same.
         """
         if isinstance(exc, AgentError):
             if exc.trace_id is None:

@@ -91,6 +91,15 @@ class LlmBreaker(_Section):
     cooldown_s: float = Field(30.0, gt=0)
 
 
+class ModelPrice(_Section):
+    """USD per 1M tokens. The YAML keys are `in` and `out` (`in` is a Python keyword)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    in_: float = Field(alias="in", ge=0)
+    out: float = Field(ge=0)
+
+
 class LlmConfig(_Section):
     """Plan 04 owns these keys and may add more."""
 
@@ -100,6 +109,7 @@ class LlmConfig(_Section):
     rate_limits: dict[str, RateLimit] = {}  # per model ID, overrides default_rpm
     retry: LlmRetry = LlmRetry()
     breaker: LlmBreaker = LlmBreaker()
+    pricing_usd_per_1m: dict[str, ModelPrice] | None = None  # plan 02: null until filled, we never invent prices
 
 
 class DeleteConfig(_Section):
@@ -114,8 +124,8 @@ class RetentionConfig(_Section):
 
 
 class ObservabilityConfig(_Section):
-    metrics_file: str = "data/runs.jsonl"
-    traces_dir: str = "data/traces"
+    metrics_file: str | None = None  # None: runs.jsonl inside app.data_dir
+    traces_dir: str | None = None  # None: traces/ inside app.data_dir
 
 
 class GoldenConfig(_Section):
@@ -185,6 +195,16 @@ class Settings(_Section):
     @property
     def log_path(self) -> Path:
         return self.data_path / "logs" / "app.log"
+
+    @property
+    def metrics_path(self) -> Path:
+        configured = self.observability.metrics_file
+        return self.resolve(configured) if configured else self.data_path / "runs.jsonl"
+
+    @property
+    def traces_path(self) -> Path:
+        configured = self.observability.traces_dir
+        return self.resolve(configured) if configured else self.data_path / "traces"
 
     @property
     def gcp_project(self) -> str | None:
