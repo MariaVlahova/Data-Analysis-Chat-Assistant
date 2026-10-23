@@ -1,27 +1,30 @@
 """`doctor`: one pass/fail line per setup check, with the fix for each failure (NFR28, Q14).
 
-Plan 03 adds BigQuery checks and plan 04 a Gemini ping (only with `--live`): each registers its
-checks with `register_check`.
+Plan 03's BigQuery checks live in `doctor_bigquery.py` and are registered below, after the setup checks. Plan 04
+adds a Gemini ping (only with `--live`) the same way, with `register_check`.
+
+This module must stay importable on a broken install, so `check_packages` can say what is missing: nothing
+heavy (pandas, BigQuery) is imported at module level here or in `doctor_bigquery.py`.
 """
 from __future__ import annotations
 
 import importlib
 import os
-import re
 import sys
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Literal
 
 from rich.text import Text
 
-from src.access.users import load_user_directory, users_path
+from src.access.users import PLACEHOLDER_BRAND, load_user_directory, users_path
+from src.cli.doctor_bigquery import BIGQUERY_CHECKS
+from src.cli.doctor_core import Check, CheckFn, DoctorContext, Status
 from src.cli.render import Renderer
-from src.config import Secrets, Settings
+from src.config import Secrets
 from src.errors import AgentError, ConfigError
 from src.storage.db import Database
 
-Status = Literal["ok", "warn", "fail", "skip"]
+__all__ = ["CHECKS", "Check", "CheckFn", "DoctorContext", "Status", "register_check", "render_checks", "run_checks"]
+
 MIN_PYTHON = (3, 11)
 
 # import name, pip name
@@ -42,25 +45,7 @@ REQUIRED_MODULES = [
     ("pytest", "pytest"),
 ]
 
-PLACEHOLDER_BRAND = re.compile(r"^<verified brand")
 
-
-@dataclass(frozen=True)
-class Check:
-    name: str
-    status: Status
-    detail: str = ""
-    fix: str = ""
-
-
-@dataclass
-class DoctorContext:
-    settings: Settings | None
-    config_error: ConfigError | None = None
-    adc_project: str | None = None  # project found in the default credentials, set by the credentials check
-
-
-CheckFn = Callable[[DoctorContext], Check]
 CHECKS: list[CheckFn] = []
 
 
@@ -126,7 +111,7 @@ def check_users(ctx: DoctorContext) -> Check:
     detail = f"{len(users.names)} users ({', '.join(users.names)})"
     if notes:
         return Check(name, "warn", detail + "; " + "; ".join(notes),
-                     "Give each brand manager real brand names. Plan 03 checks them against BigQuery.")
+                     "Give each brand manager real brand names. The Brand mapping check below lists the top brands.")
     return Check(name, "ok", detail)
 
 
@@ -145,21 +130,17 @@ def check_google_credentials(ctx: DoctorContext) -> Check:
     if key_file and not Path(key_file).is_file():
         return Check(name, "fail", "GOOGLE_APPLICATION_CREDENTIALS points to a file that does not exist",
                      "Fix the path in .env, or clear it and run: gcloud auth application-default login")
-    previous = os.environ.get("NO_GCE_CHECK")
-    os.environ["NO_GCE_CHECK"] = "true"  # skip the slow probe of a cloud metadata server on a laptop
-    try:
-        import google.auth
-        from google.auth.exceptions import DefaultCredentialsError
+    # Shortens the metadata-server probe (1 s, 1 try) before google-auth is imported. It used to switch the probe off,
+    # which also hid credentials that come from the metadata server (Compute Engine, Cloud Run) from the BigQuery
+    # checks later in this process, because google-auth reads that setting once at import.
+    from src import gcp_env  # noqa: F401
+    import google.auth
+    from google.auth.exceptions import DefaultCredentialsError
 
-        try:
-            _, ctx.adc_project = google.auth.default()
-        except DefaultCredentialsError:
-            return Check(name, "fail", "no credentials found", "Run: gcloud auth application-default login")
-    finally:
-        if previous is None:
-            os.environ.pop("NO_GCE_CHECK", None)
-        else:
-            os.environ["NO_GCE_CHECK"] = previous
+    try:
+        _, ctx.adc_project = google.auth.default()
+    except DefaultCredentialsError:
+        return Check(name, "fail", "no credentials found", "Run: gcloud auth application-default login")
     return Check(name, "ok", "found")
 
 
@@ -188,6 +169,11 @@ def check_database(ctx: DoctorContext) -> Check:
         db.close()
     return Check(name, "ok", f"{ctx.settings.db_path} (applied {len(applied)} new migration(s))" if applied
                  else f"{ctx.settings.db_path} (up to date)")
+
+
+# Registered last, so they run after the credentials and project checks they depend on.
+for _bigquery_check in BIGQUERY_CHECKS:
+    register_check(_bigquery_check)
 
 
 def run_checks(ctx: DoctorContext) -> list[Check]:

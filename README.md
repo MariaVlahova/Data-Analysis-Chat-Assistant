@@ -75,8 +75,16 @@ Exit codes: `0` normal, `2` a startup problem (bad config, unknown user, no bran
 - A brand manager sees only the brands listed. Brand names are compared **exactly**: case and spacing count.
 - An **empty brand list means no access**, never "all brands". The chat refuses to start for that user.
 - Only `role: ceo` with `all_brands: true` sees every brand. (Our proposal; not yet confirmed by the client.)
-- The brand names in the shipped file are **placeholders** (`<verified brand N>`). Plan 03 replaces them with
-  real brands from the data. `doctor` warns until then. `nobrands` is a deliberate test user for the no-access rule.
+- The brands of the user who starts the chat are checked against the real brand list (`doctor` checks every user). A
+  typo stops startup with the user and the brand (`doctor` also lists up to three close matches; the chat does not,
+  because they could be other managers' brands). A list under 24 hours old is used
+  without calling BigQuery. If BigQuery cannot be reached, a saved list up to 7 days old
+  (`data/cache/brands.json`) is used and the chat says so. With no saved list, an older one, or an error that is not
+  an outage (access revoked, wrong project), it refuses to start.
+- The brand names in the shipped file are **placeholders** (`<verified brand N>`), so **the chat will not start for
+  alice and bob until you replace them** (the CEO can start). After signing in to Google Cloud, run `python -m src.cli.main doctor`: the Brand mapping
+  check lists the top brands by item count. Copy the exact names into `users.yaml`. `nobrands` is a deliberate test
+  user for the no-access rule.
 
 ## Tests
 

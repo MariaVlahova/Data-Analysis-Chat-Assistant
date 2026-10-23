@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from src.access.users import UserContext
 from src.cli.render import ProgressFn, Renderer
@@ -17,6 +17,9 @@ from src.errors import REFUSAL_KINDS, AgentError, ConfigError, friendly, new_tra
 from src.observability import Tracer, TurnTrace, alerts, span, viewer
 from src.personas import PersonaStore
 from src.storage.db import Database, turn_id
+
+if TYPE_CHECKING:  # annotation only: importing it would load BigQuery and pandas for every CLI command
+    from src.data_access.catalog import SchemaCatalog
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +41,7 @@ class ChatSession:
     persona_name: str | None = None
     tracer: Tracer | None = None  # built from the settings when not given
     last_trace_id: str | None = None  # the newest turn of this chat, for a bare /trace
+    catalog: SchemaCatalog | None = None  # plan 03: brands, latest date and live schema, read at startup for plan 07
 
     def __post_init__(self) -> None:
         if self.tracer is None:

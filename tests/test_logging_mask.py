@@ -78,33 +78,38 @@ def test_the_older_bq_client_logs_through_a_masked_logger():
     assert bq_client.log.name == "src.data_access.bq_client"
 
 
-class _FailingClient:
-    """A BigQuery client whose every call fails with an error that quotes SQL literals, as the real one can."""
-
-    def query(self, sql):
-        raise RuntimeError("Syntax error near WHERE users.id = 12345 AND name = 'Jane Roe'")
-
-    def get_table(self, ref):
-        raise RuntimeError("Not found: Table for customer 'Jane Roe' id 12345")
+LEAKY = "Not found: Table for customer 'Jane Roe' id 12345"  # an error that quotes data, as the real one can
 
 
-def test_bigquery_error_text_never_reaches_the_log_because_no_pattern_can_clean_it(settings):
+def test_bigquery_error_text_never_reaches_the_log_because_no_pattern_can_clean_it(settings, monkeypatch):
     # Masking catches emails, phones and the like, not a bare ID or a name. So the error lines log the
-    # exception class and call sites only, as plan 01 does everywhere else.
-    from src.data_access.bq_client import BigQueryRunner
+    # exception class and call sites only, as plan 01 does everywhere else. Two places still log a caught
+    # BigQuery failure: creating the client, and cancelling a job.
+    import pandas as pd
 
-    runner = object.__new__(BigQueryRunner)  # no real client, no credentials
-    runner.client, runner.dataset_id = _FailingClient(), "ds"
+    from src.data_access import bq_client
+    from src.data_access.safe_runner import SafeQueryRunner, SystemQuery
+    from tests.fake_bigquery import FakeClient, FakeRunner, Rule, default_client
+
+    def failing_client(project=None):
+        raise RuntimeError(LEAKY)
+
+    monkeypatch.setattr(bq_client.bigquery, "Client", failing_client)
+    client = default_client()
+    client.add("GROUP BY brand", result_errors=[TimeoutError()], cancel_error=RuntimeError(LEAKY), df=pd.DataFrame())
     setup_logging(settings)
     try:
         with pytest.raises(RuntimeError):
-            runner.execute_query("SELECT 1")
-        with pytest.raises(RuntimeError):
-            runner.get_table_schema("users")
+            bq_client.BigQueryRunner(project_id="p")
+        from src.errors import AgentError
+
+        with pytest.raises(AgentError):  # a timeout: the job is cancelled, the cancel fails with the leaky text
+            SafeQueryRunner(settings, FakeRunner(client)).run(SystemQuery("SELECT 1 GROUP BY brand"))
     finally:
         text = read_log(settings)
-    assert "BigQuery execution failed: RuntimeError at" in text and "Failed to get schema for table users" in text
-    for leak in ("12345", "Jane", "Roe", "Syntax error"):
+    assert "Failed to initialize BigQuery client: RuntimeError at" in text
+    assert "could not cancel a BigQuery job: RuntimeError at" in text
+    for leak in ("12345", "Jane", "Roe", "customer"):
         assert leak not in text
 
 

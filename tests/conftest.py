@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.fake_bigquery import FakeClient, FakeRunner, default_client
+
 USERS_YAML = """\
 users:
   alice: {name: Alice, role: brand_manager, brands: ["Brand A", "Brand B"]}
@@ -17,10 +19,26 @@ SECRET_ENV_VARS = ("GEMINI_API_KEY", "GOOGLE_CLOUD_PROJECT", "GOOGLE_APPLICATION
 
 
 @pytest.fixture(autouse=True)
-def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No real keys or config paths leak into a test."""
+def clean_env(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> None:
+    """No real keys or config paths leak into a test. Tests marked `live` are the exception: they need the real
+    GOOGLE_APPLICATION_CREDENTIALS and GOOGLE_CLOUD_PROJECT to reach BigQuery."""
+    if request.node.get_closest_marker("live"):
+        return
     for name in SECRET_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def fake_bigquery(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> FakeClient | None:
+    """No test reaches BigQuery: every `SafeQueryRunner` gets this scripted client (canned dataset, see
+    tests/fake_bigquery.py). A test changes its behaviour by adding rules. Tests marked `live` get the real client."""
+    if request.node.get_closest_marker("live"):
+        return None
+    client = default_client()
+    monkeypatch.setattr(
+        "src.data_access.safe_runner.make_runner", lambda settings: FakeRunner(client)
+    )
+    return client
 
 
 @pytest.fixture

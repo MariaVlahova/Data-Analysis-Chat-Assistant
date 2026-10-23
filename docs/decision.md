@@ -397,7 +397,7 @@ flowchart TD
 - Customer behaviour (top customers, total spend): covered, with a fake ID per session.
 - Product performance and comparison: covered by the Planner.
 - Time-based metrics: covered. "Last month" needs a definition (see Q6).
-- Questions about the data structure: not covered. No step describes this path. `bq_client.py` has `get_table_schema`.
+- Questions about the data structure: not covered. No step describes this path. The provided `bq_client.py` has `get_table_schema`. (impl) The prototype's copy drops that method; plan 03 reads the schema through `SafeQueryRunner.get_table` into `SchemaCatalog`, and plan 07 adds the path.
 - Multi-step questions: covered by the Planner and replan.
 - Report with action items: covered by the Composer.
 ### 7.4 Beyond or against the brief

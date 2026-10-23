@@ -1,6 +1,14 @@
+"""The one place a `bigquery.Client` is created. Only `SafeQueryRunner` uses it (plan 03, S2).
+
+The original client (`requirements/bq_client.py`) also had `execute_query` and `get_table_schema`. Both are gone:
+`execute_query` ran SQL with no dry run, byte cap, timeout, labels or row cap, and nothing needs either method now
+that `SafeQueryRunner` runs queries and reads table metadata. With the method gone it cannot be called by mistake.
+`tests/test_no_direct_execute.py` keeps it from coming back and keeps the client inside `src/data_access/`.
+"""
 import logging
-from typing import Optional, List, Dict, Any
-import pandas as pd
+from typing import Optional
+
+from src import gcp_env  # noqa: F401 - must come before the Google imports: it shortens the credential probe
 from google.cloud import bigquery
 
 from src.errors import crash_summary
@@ -12,68 +20,19 @@ log = logging.getLogger(__name__)
 
 
 class BigQueryRunner:
-    """A lean BigQuery client for executing SQL queries and returning DataFrame results."""
+    """Holds the BigQuery client. The dataset comes from `bigquery.dataset` in the settings, read by `SafeQueryRunner`
+    only, so there is one source for it."""
 
-    def __init__(self, project_id: Optional[str] = None, dataset_id: Optional[str] = "bigquery-public-data.thelook_ecommerce") -> None:
+    def __init__(self, project_id: Optional[str] = None) -> None:
         """Initialize BigQuery client.
 
         Args:
             project_id: Google Cloud project ID. If None, uses default credentials.
-            dataset_id: BigQuery dataset ID. If None, uses default dataset.
         """
         log.info("Initializing BigQuery client")
         try:
             self.client = bigquery.Client(project=project_id)
-            self.dataset_id = dataset_id
-            log.info(f"BigQuery client initialized for dataset: {self.dataset_id}")
+            log.info("BigQuery client initialized")
         except Exception as e:
             log.error("Failed to initialize BigQuery client: %s", crash_summary(e))
-            raise
-
-    def execute_query(self, sql_query: str) -> pd.DataFrame:
-        """Execute a SQL query and return results as a DataFrame.
-
-        Args:
-            sql_query: The SQL query to execute.
-
-        Returns:
-            DataFrame containing the query results.
-
-        Raises:
-            Exception: If query execution fails.
-        """
-        try:
-            log.info(f"Executing BigQuery query")
-            query_job = self.client.query(sql_query)
-            df = query_job.result().to_dataframe()
-            log.info(f"Query completed successfully, returned {len(df)} rows")
-            return df
-        except Exception as e:
-            log.error("BigQuery execution failed: %s", crash_summary(e))
-            raise
-
-    def get_table_schema(self, table_name: str) -> List[Dict[str, Any]]:
-        """Get schema information for a specific table.
-
-        Args:
-            table_name: Name of the table (orders, order_items, products, users).
-
-        Returns:
-            List of dictionaries containing column information.
-        """
-        try:
-            table_ref = f"{self.dataset_id}.{table_name}"
-            table = self.client.get_table(table_ref)
-            schema_info = []
-            for field in table.schema:
-                schema_info.append({
-                    "name": field.name,
-                    "type": field.field_type,
-                    "mode": field.mode,
-                    "description": field.description or ""
-                })
-            log.info(f"Retrieved schema for table {table_name}")
-            return schema_info
-        except Exception as e:
-            log.error("Failed to get schema for table %s: %s", table_name, crash_summary(e))
             raise

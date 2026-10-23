@@ -6,6 +6,7 @@ The one rule that matters: an empty brand list means NO access, never "all brand
 from __future__ import annotations
 
 import hashlib
+import re
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,7 @@ ScopeMode = Literal["all", "brands", "none"]
 
 USERS_FILE_NAME = "users.yaml"
 SALT_FILE_NAME = "user_hash_salt"
+PLACEHOLDER_BRAND = re.compile(r"^<verified brand")  # the names shipped in users.yaml until real ones are chosen (plan 03)
 
 class UserEntry(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
