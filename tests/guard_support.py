@@ -40,6 +40,17 @@ def make_guard(**guards) -> SQLGuard:
     return SQLGuard(make_settings(**guards), make_allowlist())
 
 
+def issue_query(**fields) -> GuardedQuery:
+    """A sealed `GuardedQuery` made by hand, for tests of what comes after the SQL Guard (plan 06). Tests may call `issue`;
+    nothing in `src/` but the guard may (`tests/test_guarded_query_origin.py`). Say only what the test is about:
+    `issue_query(demographic=True, k_column="__k_users")`."""
+    defaults = dict(
+        sql="SELECT 1", params=(), tables=frozenset(), id_columns=(), per_customer=False, demographic=False,
+        k_column=None, limit=1000, rewrites=(), fingerprint="fingerprint", scope_label="your brands: Brand A, Brand B",
+    )
+    return GuardedQuery.issue(**{**defaults, **fields})
+
+
 def refused(guard: SQLGuard, sql: str, user: UserContext = ALICE) -> AgentError:
     """The error `check` raises. The test fails if the query was accepted."""
     with pytest.raises(AgentError) as err:

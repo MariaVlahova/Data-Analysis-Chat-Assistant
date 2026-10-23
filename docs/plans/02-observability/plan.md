@@ -63,6 +63,8 @@ Two things the plans that emit spans must do themselves: a model call is **both*
 | `llm.call` | 04 | step, model, attempt, tokens in/out, latency, retry reason, fallback used, prompt version |
 | `bq.dry_run`, `bq.query` | 03 | final SQL (masked), bytes processed, bytes billed, rows, cache hit, error kind |
 | `guard.sql` span (kind `guard`) | 05 | one around every SQL Guard check, holding its `guard.decision` event. Attributes: scope mode, fingerprint, tables, limit, rewrites, per_customer, demographic. Never the SQL (the `bq.*` spans hold that, masked) |
+| `guard.result` span (kind `guard`) | 06 | one around every Result Guard run. Counts only: status, rows, columns_masked, cells_masked, values_masked, ids_replaced, groups_hidden, rows_cut. Never a cell value |
+| `guard.output` span (kind `guard`) | 06 | one around every Output Guard scan. On a block: findings, kinds and where in the answer each one was (`address@12-26`). Never the answer text |
 | `guard.decision` event | 05, 06, 07, 08 | guard, outcome, rule ID |
 | `hitl.requested`, `hitl.approved`, `hitl.denied` events | 07, 08 | level, count, id-set hash (never the report text) |
 | `numeric_check` event | 07 | number checked, matching sub-question ID (the provenance gap in the checklist) |
@@ -71,7 +73,7 @@ Two things the plans that emit spans must do themselves: a model call is **both*
 - Every string attribute passes through `pii.mask()` and is cut to 2000 characters.
 - Never attach a DataFrame, a list of rows, or a cell value. Query spans record the SQL, row count, bytes and column names only.
 - Prompts are not stored by default. Store prompt template ID, version, a hash and the character count. A `--debug-prompts` flag stores the text, still masked. (impl)
-- LLM outputs are stored after masking. The final answer is stored after the Output Guard, so it is already clean. The Composer draft that the Output Guard blocked is stored masked.
+- LLM outputs are stored after masking. The final answer is stored after the Output Guard, so it is already clean. The Composer draft that the Output Guard blocked is not stored at all (plan 06): a pattern cannot mask a name, and a user reads their own turns with `/trace`. The `guard.output` span keeps the finding count, kinds and positions instead.
 - The user's question is stored masked (a user may type an email in the question).
 - Identity in traces and metrics is `user_hash` only.
 - Version tags (F41): model ID as actually used (after fallback), prompt version (template constant plus a hash of the text), persona version (`id@vN+sha8` from plan 01, or `none`).

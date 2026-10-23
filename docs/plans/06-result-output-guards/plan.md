@@ -1,5 +1,5 @@
 # Plan 06: Result and Output Guards
-Status: not started
+Status: built and tested offline. Nothing calls the guards yet: plan 07 wires them in. No live step is left. The Output Guard's false-positive fixture is hand-written text, not real answers (see "Still to do").
 Estimate: about 1 h (our estimate) · Depends on: 01, 02 (`pii.py`), 05 (query tags) · Blocks: 07
 
 **Goal:** Mask PII in result rows before the model sees them, replace real customer IDs with fixed fake IDs per session, hide groups below k = 10 except for a ranked-spend-list exception — still an open rule per decision.md's own verdict (see PRD F15/A3) — that never joins demographic columns, cap rows at 50, and scan the final answer for PII before it is shown.
@@ -107,12 +107,12 @@ tests/test_result_guard.py  test_pseudonymizer.py  test_output_guard.py
 ```
 
 ## Tasks
-- [ ] `pseudonymizer.py` with the uniqueness lookup.
-- [ ] `result_guard.py`: wrapper, column masking, value scan, pseudonymize, suppression table, cap, summary, notices, spans.
-- [ ] Extend `pii.py` with address and coordinate patterns. Keep one pattern list.
-- [ ] `output_guard.py`: scan, block, message, alert, metrics counter.
-- [ ] Build the false-positive fixture of money, count and percent strings.
-- [ ] Document the notice texts so plan 07 can render them.
+- [x] `pseudonymizer.py` with the uniqueness lookup.
+- [x] `result_guard.py`: wrapper, column masking, value scan, pseudonymize, suppression table, cap, summary, notices, spans.
+- [x] Extend `pii.py` with address and coordinate patterns. Keep one pattern list.
+- [x] `output_guard.py`: scan, block, message, alert, metrics counter.
+- [x] Build the false-positive fixture of money, count and percent strings. (Hand-written: 43 strings, 0 false positives, including report headings such as `3 Recommended Actions To Drive Revenue`. Not real answers. The test keeps a floor of 30 strings, not an exact count, so adding real answers never needs an edit of the assertion.)
+- [x] Document the notice texts so plan 07 can render them. (Next section.)
 
 ## Tests and acceptance
 - Pseudonymizer: same real ID gives the same label; different IDs never collide across 10,000 draws; a new instance gives different labels; labels cannot be turned back into IDs.
@@ -125,6 +125,46 @@ tests/test_result_guard.py  test_pseudonymizer.py  test_output_guard.py
 - Output Guard: each pattern blocks; the money and count fixture passes; the fake ID format passes; a blocked answer is never printed (CLI test); the metrics row has `pii_at_output = 1`.
 - **Canary test:** plant `canary@example.test` and a fake street address in raw rows. They must not appear in `GuardedResult`, the graph state, the trace file, the log file or the final output.
 - Acceptance: the PRD success metrics "PII leaks 0" and "groups below k = 10 suppressed 100%" hold on the attack set in plan 09.
+
+## Notice texts (for plan 07)
+`GuardedResult.notices` holds finished sentences. Plan 07 renders them into the answer as they are. The texts live in `src/guards/result_guard.py`, so a test can import them.
+
+| When | Notice |
+|---|---|
+| a column was masked | `1 column was hidden because it held personal data.` / `N columns were hidden because they held personal data.` |
+| a pattern changed a text value | `Some personal details inside text values were hidden.` |
+| groups below k were hidden | `3 groups with fewer than 10 customers were hidden.` / `1 group with fewer than 10 customers was hidden.` |
+| `demographic` with no `k_column` (status `withheld`) | `Group sizes could not be checked, so the result was withheld.` |
+| a ranked customer list | `Customer numbers are labels for this session only.` |
+| a ranked list for a brand manager (S15) | `Each customer's spend counts only purchases in your brands.` |
+| rows were cut | `Showing top 50 of 1,240 rows.` (N is after suppression, before the cap; the first number is what was kept) |
+| every row seen was hidden, and the runner had cut the frame | `4,998 more rows were not checked, so this result may be incomplete.` (after the "groups were hidden" notice) |
+
+An empty result has no notice. If every group was hidden the status is `empty` and the "groups were hidden" notice is the only explanation, so the Composer must not say "no data found". When the runner had cut the frame, the rows past the cut were never looked at, so the "not checked" notice follows it: "all groups were hidden" alone would say the result is complete.
+
+## What was decided while building (impl)
+- **One pattern list, one switch.** `pii.scan(text, extended=True)` adds the street address, coordinate and postal-code patterns (tokens `[ADDRESS_MASKED]`, `[COORDS_MASKED]`, `[POSTAL_MASKED]`). The tracer and the log filter keep the short list. The Result Guard scans cell values with the long list too, so an address inside a text cell is masked before the model sees it.
+- **The Result Guard checks the query is the SQL Guard's own** (`GuardedQuery.authentic`). A look-alike or a changed copy could say `id_columns=()` and let real IDs through, so it fails closed.
+- **An empty frame is `empty`, not `withheld`**, even for a demographic query without a group-size column: there is nothing to hide, and `empty` lets the loop widen the search.
+- **Fail closed on inconsistency.** A ranked list whose ID column is not in the result, a group-size column that is missing or not a whole number, a repeated column name that cannot be told apart, nesting deeper than 8 levels, a cell type we do not handle (bytes, durations, anything else), a text cell over 20,000 characters, an array or struct over 2,000 values and a run over 5 seconds all raise `RESULT_GUARD_FAILED`. The clock is read between rows, between cells and after the summary. A regex cannot be interrupted, so the size limits are what bound it, and every pattern has to be linear by itself (`tests/test_pii.py` tries each opening with long runs of whitespace).
+- **The tracing calls are inside the same wrapper.** If recording the decision fails, the caller still gets `RESULT_GUARD_FAILED` and no rows, not an arbitrary exception that plan 07 would report as INTERNAL.
+- **Column names are compared by WORDS.** A name is split at separators and camelCase, and the words are compared with a vocabulary: `First Name`, `last-name`, `E-mail`, `firstName`, `postcode`, `customer_name`, `user_name`, `street`, `mobile` and `forename` are sensitive, while `smartphone_revenue`, `headphones_sold`, `addressable_market`, `mobile_orders` and `brand_name` are metrics. (The first version looked for letters inside the name, which hid metrics and missed `postcode`.) Compound words such as `useremail` and `customername` are caught by suffix; `phone` has no suffix rule on purpose (`smartphone`). A header that holds a pattern (a PIVOT names columns after values) is cleaned in `columns`, in the row keys and in the summary.
+- **Names that end in `number`, `num` or `no` are not customer IDs.** `buyers_number` is a count, and a count must not become `Customer #21257`. Only `id`, `ids` and `key` after a customer word, plus what the SQL Guard declares in `id_columns`.
+- **Strings inside an array or struct are scanned as the text they are,** before the JSON is written, and the JSON text is scanned too. JSON writes a line break as the two characters backslash and n, which no pattern reads across.
+- **The "only your brands" notice** compares `GuardedQuery.scope_label` with `ALL_BRANDS_LABEL` from `src/guards/query.py`, the same constant the SQL Guard writes.
+- **The group-size column never leaves the guard.** The summary is built from the rows that survived suppression, before the cap, so the Evidence Check can compare a total over all of them while the model sees 50.
+- **Rows past the runner's cut are counted, not seen.** If `total_rows` is more than the frame, the difference is added to the total. Suppression cannot be applied to rows we never saw.
+- **Customer ID columns are found three ways:** the SQL Guard's `id_columns`, the allow-list's customer ID column names, and names like `user_id` or `customer_no`. A bare `id` is only an ID when the SQL Guard says so.
+- **The pseudonymizer keeps no real ID.** The lookup key is a keyed hash with a salt that lives in the object. The label space widens from 5 digits when half full, up to 7, and then stops (fail closed). `copy` and `pickle` raise, so a checkpoint write fails loudly.
+- **The Output Guard blocks on the first finding and does not store the answer it held back, not even masked.** A pattern cannot mask a name or an unlabelled real ID, and `/trace` shows a user their own turns, so the held-back answer would be one command away. The `guard.output` span keeps the count, the kinds and where each finding was (`email@41-60`). Every finding counts in `pii_at_output`. A scan that crashes, an answer that is not text, and a failure while recording the result are all `OUTPUT_BLOCKED` too (one wrapper, like the Result Guard), and the user still gets the usual message when a finding was made.
+- **The patterns are tuned for precision, because one hit blocks the whole answer and a report with action items is the core output.** Address: a house number (`42`, `221B`, `12-14`, `5/42`), one to four capitalized name words, a street word; the shortest reading wins; a `#`, `$`, `%` or `1,` before the number rules it out (money, a label); a name made of business nouns or the little words of a sentence (`Brands`, `To`, `For`) is not a street. Street words that are also English (`Drive`, `Way`, `Place`, `Court`, `Lane`, `Circle`, `Square`, `Trail`, `Alley`) count only at the end of the phrase (a comma, bracket, full stop or line end follows). Postal code: `City, ST 12345` with a real US state, `City ON K1A 0B1` with a real province, `City, SW1A 1AA`, or a code after "zip code" / "postal code" / "postcode". Coordinates: a pair needs four decimals each and either five decimals or a value of ten or more (`34.0522, -118.2437`, not `0.0543, 0.0612`). Every pattern is linear in the input and `scan` merges overlaps in one pass.
+- **The fake-ID exemption is bounded.** `Customer #` followed by 5 to 7 digits is a label; `Customer #4111111111111111` is a card number with a prefix and is still blocked. The widths come from the pseudonymizer's own constants.
+- **Spans:** `guard.result` and `guard.output` (kind `guard`), each with one `guard.decision`. Rule IDs: `COLUMN_MASKED`, `VALUE_MASKED`, `IDS_REPLACED`, `GROUPS_HIDDEN`, `ROWS_CAPPED` (outcome `rewrite`), `GROUP_SIZE_UNKNOWN`, `PII_AT_OUTPUT`, `GUARD_ERROR` (outcome `block`).
+
+## Still to do
+- **Run the Output Guard on real answers.** The fixture (`tests/test_output_guard.py`) is hand-written. Add real answer text from the golden cases once plans 07 and 09 produce it, and record the false-positive count again. A false positive blocks a good answer.
+- **Known gaps of the pattern scan** (production replaces it with Cloud Sensitive Data Protection, plan 11): no pattern finds a person's name; a postcode on its own, without a place or a label (`SW1A 1AA`), is not found, and nor is a postal code in another country's format; a street name in lower case (`123 main st`) is not found, and neither is a format that puts the street word first (`Rue de Rivoli 5`, `Hauptstraße 5`); an address followed by a word when its street word is also English (`42 Wallaby Way via courier`) is not found; coordinates of two small numbers with four decimals (Accra, `5.6037, -0.1870`) are not found. Where a pattern errs the other way: a product written as a number, a capitalized word and a street word (`2 Park Place`) is read as an address, and only the nouns in `_NOT_STREET_NAMES` are excluded from street names, so a title-case phrase that ends in a plain street word and uses another noun can still be blocked. `tests/test_pii.py` keeps every one of these as an example, so a change in either direction is a decision.
+- **Complementary suppression** is not handled (unchanged from the table below).
 
 ## Open items and defaults used
 | Item | Default used | Who answers |
