@@ -49,6 +49,9 @@ class Renderer:
     def error(self, text: str) -> None:
         self.console.print(Panel(Text(text), title="Something went wrong", border_style="red"))
 
+    def warning(self, text: str) -> None:
+        self.console.print(Text(text, style="bold yellow"))
+
     def traceback(self) -> None:
         self.console.print_exception(show_locals=False)
 

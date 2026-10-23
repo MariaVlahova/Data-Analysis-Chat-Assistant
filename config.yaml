@@ -50,6 +50,7 @@ llm:                                 # plan 04 owns these keys
   rate_limits: {}                    # per model: {gemini-3.8-flash: {rpm: 15}}
   retry: {base_s: 1.0, cap_s: 20.0, attempts: 3}
   breaker: {failure_threshold: 3, cooldown_s: 30.0}
+  pricing_usd_per_1m: null           # plan 02 cost estimate. Fill from the Google pricing page: {gemini-3.8-flash: {in: 0.0, out: 0.0}}. null: cost_usd stays null
 
 delete:
   large_batch_threshold: 10
@@ -60,9 +61,9 @@ retention:
   checkpoint_days: 90
   trace_days: 90                     # [NOT SPECIFIED], Q25 default
 
-observability:
-  metrics_file: data/runs.jsonl
-  traces_dir: data/traces
+observability: {}                    # runs.jsonl and traces/ live inside app.data_dir. To move them, set:
+  # metrics_file: data/runs.jsonl    # one PII-free row per question (replace the {} above with these keys)
+  # traces_dir: data/traces          # one file per question, deleted after retention.trace_days
 
 golden:
   enabled: false

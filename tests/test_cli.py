@@ -192,12 +192,6 @@ def test_slash_new_starts_a_new_conversation_and_resets_the_turn_counter(project
     assert len(conversations(project)) == 2
 
 
-def test_trace_and_metrics_are_placeholders_until_plan_02(config_path):
-    result = chat(config_path, "alice", "/trace\n/metrics\n/quit\n")
-    assert result.exit_code == 0
-    assert result.output.count("not available yet") == 2
-
-
 def test_resuming_a_conversation_by_id(project, config_path):
     first = chat(config_path, "alice")
     conv_id = conversations(project)[0]["id"]
