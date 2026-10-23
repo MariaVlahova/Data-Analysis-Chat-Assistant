@@ -1,11 +1,14 @@
 """Shared fixtures. Tests use temporary project folders and never touch the real users.yaml or data/."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
 
 from tests.fake_bigquery import FakeClient, FakeRunner, default_client
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 USERS_YAML = """\
 users:
@@ -48,10 +51,16 @@ def users_yaml() -> str:
 
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A temporary project folder with a minimal config.yaml and a users.yaml. The cwd is moved into it,
-    so no developer .env file is picked up."""
+    """A temporary project folder with a minimal config.yaml, a users.yaml and the repository's schema_allowlist.yaml.
+    The cwd is moved into it, so no developer .env file is picked up."""
     (tmp_path / "config.yaml").write_text("app:\n  language: en\n", encoding="utf-8")
     (tmp_path / "users.yaml").write_text(USERS_YAML, encoding="utf-8")
+    allowlist = (REPO_ROOT / "schema_allowlist.yaml").read_text(encoding="utf-8")  # plan 05
+    flag = re.compile(r"^reviewed_against_live: (true|false)$", re.MULTILINE)
+    assert flag.search(allowlist), "schema_allowlist.yaml must carry the reviewed_against_live flag"
+    # The shipped file says whether a person has compared it with the live schema, and that changes once someone has. These
+    # tests are about everything else, so their copy always says it was reviewed (the tests of the gate say otherwise).
+    (tmp_path / "schema_allowlist.yaml").write_text(flag.sub("reviewed_against_live: true", allowlist), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     return tmp_path
 

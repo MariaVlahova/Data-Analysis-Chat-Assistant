@@ -60,7 +60,10 @@ def test_the_bigquery_checks_run_after_the_setup_checks_they_depend_on(tmp_path)
     )
     assert result.returncode == 0, result.stderr
     order = eval(result.stdout.split("ORDER:", 1)[1].strip())
-    bigquery_checks = ["check_bigquery_dataset", "check_byte_cap", "check_brand_mapping_live", "check_brand_coverage", "check_string_columns"]
+    bigquery_checks = [
+        "check_bigquery_dataset", "check_byte_cap", "check_allowlist", "check_brand_mapping_live", "check_brand_coverage",
+        "check_string_columns",
+    ]
     first = order.index(bigquery_checks[0])
     assert order[first:first + len(bigquery_checks)] == bigquery_checks  # together, in this order
     assert first > order.index("check_google_credentials") and first > order.index("check_google_project")  # after the setup checks

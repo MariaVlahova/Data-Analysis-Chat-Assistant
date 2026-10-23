@@ -1,5 +1,6 @@
 """BigQuery checks for `doctor` (plan 03): the dataset, the byte cap, the brand mapping, items without a brand
-(A23) and the free-text columns (A21).
+(A23) and the free-text columns (A21). Plan 05 adds the allow-list check, which compares `schema_allowlist.yaml` with
+the live columns (Q4).
 
 They share one loaded catalog. If it cannot be loaded, the first check reports why and the rest are skipped, so
 one outage is not reported five times. `doctor.py` registers `BIGQUERY_CHECKS` after its setup checks.
@@ -102,6 +103,46 @@ def check_byte_cap(ctx: DoctorContext) -> Check:
     return Check(name, "ok", detail)
 
 
+def check_allowlist(ctx: DoctorContext) -> Check:
+    """Plan 05. The file must be valid and every column it allows must exist live. A live column in neither list is
+    hidden from the agent (fail closed), so it is listed here for a human to classify (Q11)."""
+    name = "Column allow-list (Q4, Q11)"
+    if ctx.settings is None:
+        return Check(name, "skip", "skipped because the config file did not load")
+    from src.guards.allowlist import load_allowlist
+
+    try:
+        allowlist = load_allowlist(ctx.settings)
+    except ConfigError as exc:
+        return Check(name, "fail", exc.message, exc.fix or "")
+    tables = allowlist.table_names()
+    summary = (
+        f"{len(tables)} tables, {sum(len(allowlist.allowed(t)) for t in tables)} allowed columns, "
+        f"{sum(len(allowlist.blocked(t)) for t in tables)} blocked, "
+        f"{sum(len(allowlist.quasi_identifiers(t)) for t in tables)} quasi-identifiers"
+    )
+    unreviewed = (
+        "" if allowlist.reviewed_against_live
+        else "; NOT yet reviewed by a person against the live schema (reviewed_against_live: false)"
+    )
+    review_fix = "After the live checks pass and the PII split is agreed with the owner, set reviewed_against_live: true in schema_allowlist.yaml."
+    loaded = _prepare(ctx, name)
+    if isinstance(loaded, Check):
+        return Check(name, "warn", summary + "; not compared with BigQuery, which could not be read" + unreviewed,
+                     "Fix the BigQuery dataset check, then run doctor again.")
+    try:
+        unclassified = loaded.catalog.reconcile(allowlist)
+    except ConfigError as exc:
+        return Check(name, "fail", exc.message, exc.fix or "")
+    if unclassified:
+        return Check(name, "warn", f"{summary}; live columns in neither list, hidden from the agent: {', '.join(unclassified)}{unreviewed}",
+                     "Put each in schema_allowlist.yaml as allowed or blocked. The file marks the PII split as our default for Q11.")
+    detail = f"{summary}; every allowed column exists live and every live column is classified"
+    if unreviewed:
+        return Check(name, "warn", detail + unreviewed, review_fix)
+    return Check(name, "ok", detail)
+
+
 def _offline(ctx: DoctorContext) -> bool:
     """True when loading the catalog found BigQuery down and used a saved copy. Another live query would only wait
     through the same retries again."""
@@ -179,4 +220,4 @@ def check_string_columns(ctx: DoctorContext) -> Check:
 
 
 # In the order they run. `doctor.py` registers them after the credentials and project checks.
-BIGQUERY_CHECKS = [check_bigquery_dataset, check_byte_cap, check_brand_mapping_live, check_brand_coverage, check_string_columns]
+BIGQUERY_CHECKS = [check_bigquery_dataset, check_byte_cap, check_allowlist, check_brand_mapping_live, check_brand_coverage, check_string_columns]

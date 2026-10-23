@@ -19,6 +19,8 @@ from src.observability import Tracer, turn_metrics
 from src.observability.metrics import read_runs
 from tests.fake_bigquery import FakeClient, FakeRunner, Rule
 
+REAL_ACCEPTED_QUERY_TYPES = safe_runner.ACCEPTED_QUERY_TYPES  # read before any fixture swaps in the stand-in
+
 CANARY = "canary@example.test"
 SELECT_ONE = "SELECT brand, SUM(sale_price) AS revenue FROM t GROUP BY brand"
 PARAMS = [bigquery.ArrayQueryParameter("brands", "STRING", ["Brand A", "Brand B"])]
@@ -26,7 +28,7 @@ PARAMS = [bigquery.ArrayQueryParameter("brands", "STRING", ["Brand A", "Brand B"
 
 @dataclass
 class Query:
-    """The tiny stand-in for plan 05's GuardedQuery that the plan allows until plan 05 exists."""
+    """A stand-in for plan 05's GuardedQuery with BigQuery-form params, so these tests need not build a full one."""
 
     sql: str = SELECT_ONE
     params: list = field(default_factory=lambda: list(PARAMS))
@@ -68,8 +70,8 @@ def sleeps() -> list[float]:
 
 @pytest.fixture(autouse=True)
 def the_test_query_counts_as_guarded(monkeypatch):
-    """`Query` stands in for plan 05's GuardedQuery, which the runner will accept once it exists. Any other type is
-    refused (see the test at the end of this file)."""
+    """`Query` stands in for plan 05's GuardedQuery. Any other type is refused (see the tests at the end of this file,
+    which use the real accepted types)."""
     monkeypatch.setattr(safe_runner, "ACCEPTED_QUERY_TYPES", (SystemQuery, Query))
 
 
@@ -721,9 +723,54 @@ def test_a_query_that_did_not_come_from_the_sql_guard_never_runs(client, tmp_pat
     assert [row["guard_blocks"]["sql"] for row in rows] == [1, 1]
 
 
-def test_the_accepted_types_are_the_system_query_until_plan_05_adds_its_own(monkeypatch):
-    monkeypatch.undo()  # drop the autouse stand-in
-    assert safe_runner.ACCEPTED_QUERY_TYPES == (SystemQuery,)
+def use_the_real_accepted_types(monkeypatch):
+    """Put back the real tuple. `monkeypatch.undo()` would also undo the fake BigQuery client and the cleaned environment
+    that every test relies on, and a test that built its own client would then reach the real service."""
+    monkeypatch.setattr(safe_runner, "ACCEPTED_QUERY_TYPES", REAL_ACCEPTED_QUERY_TYPES)
+
+
+def test_the_accepted_types_are_the_system_query_and_the_sql_guards_guarded_query():
+    from src.guards.query import GuardedQuery
+
+    assert REAL_ACCEPTED_QUERY_TYPES == (SystemQuery, GuardedQuery)
+
+
+def guarded(sql: str = SELECT_ONE, params=()):
+    from src.guards.query import GuardedQuery
+
+    return GuardedQuery.issue(
+        sql=sql, params=tuple(params), tables=frozenset({"orders"}), id_columns=(), per_customer=False, demographic=False,
+        k_column=None, limit=1000, rewrites=(), fingerprint="f" * 64, scope_label="all brands",
+    )
+
+
+def test_a_real_guarded_query_runs_and_its_array_param_reaches_bigquery_as_an_array_query_parameter(client, tmp_path, sleeps, monkeypatch):
+    from src.guards.query import ArrayParam
+
+    use_the_real_accepted_types(monkeypatch)
+    gq = guarded(params=[ArrayParam("brands", "STRING", ("Brand A", "Brand B"))])
+    outcome = runner_with(client, tmp_path, sleeps).run(gq)
+    assert list(outcome.df["brand"]) == ["Brand A"]
+    for job in client.jobs:  # the dry run and the real job
+        (param,) = job.config.query_parameters
+        assert isinstance(param, bigquery.ArrayQueryParameter)
+        assert (param.name, param.array_type, param.values) == ("brands", "STRING", ["Brand A", "Brand B"])
+
+
+def test_a_guarded_query_without_params_sends_none(client, tmp_path, sleeps, monkeypatch):
+    use_the_real_accepted_types(monkeypatch)
+    runner_with(client, tmp_path, sleeps).run(guarded())
+    assert all(job.config.query_parameters == [] for job in client.jobs)
+
+
+def test_a_look_alike_of_the_guarded_query_is_still_refused(client, tmp_path, sleeps, monkeypatch):
+    from dataclasses import make_dataclass
+
+    use_the_real_accepted_types(monkeypatch)
+    look_alike = make_dataclass("GuardedQuery", [("sql", str), ("params", tuple)])(SELECT_ONE, ())  # same name, same fields
+    with pytest.raises(AgentError) as err:
+        runner_with(client, tmp_path, sleeps).run(look_alike)
+    assert err.value.rule_id == "UNGUARDED_QUERY" and client.jobs == []
 
 
 # no duplicate sources of truth ------------------------------------------------------------------------------------------

@@ -1,0 +1,79 @@
+# The columns the agent may use (plan 05, decision 3.4). An allow-list, not a block list: a column that is not
+# listed here does not exist for the agent. A column that appears upstream later stays invisible until a human
+# classifies it (fail closed). `doctor` lists live columns that are in neither list.
+#
+# STATUS: this is our EXPECTED content for thelook_ecommerce, not yet compared with the live schema (Q4). The PII
+# split below is our default for Q11 [OPEN], not a client answer:
+#   - blocked:            direct identifiers. Never selectable, filterable or groupable, in any form.
+#   - quasi_identifiers:  allowed only inside aggregates. The Result Guard hides groups of fewer than 10 customers.
+#   - customer_id_columns: columns that hold a customer ID. They may only leave as a ranked spend list (S7), and
+#                          the Result Guard replaces them with fake IDs.
+# Names are matched without regard to case. The chat refuses to start if a name under `allowed` is not in BigQuery.
+dataset: bigquery-public-data.thelook_ecommerce
+
+# Set this to true only after `doctor --refresh` and `pytest -m live tests/test_live_sql_guard.py` pass AND a person has
+# read the columns below against the live schema and agreed the PII split with the owner (Q4, Q11). Until then `doctor`
+# warns and the chat logs a warning: a column under the wrong heading would quietly weaken the customer-row rules.
+reviewed_against_live: false
+
+customer_id_columns: [users.id, orders.user_id, order_items.user_id]
+
+tables:
+  users:
+    allowed: [id, age, gender, state, city, country, traffic_source, created_at]
+    # created_at is the sign-up timestamp: a different value for nearly every customer, so as a key it stands in for the
+    # customer ID. It is a quasi-identifier, so it may only leave inside groups of 10 or more customers.
+    quasi_identifiers: [age, gender, state, city, country, traffic_source, created_at]
+    blocked: [first_name, last_name, email, street_address, postal_code, latitude, longitude, user_geom]
+  orders:
+    allowed: [order_id, user_id, status, gender, created_at, shipped_at, delivered_at, returned_at, num_of_item]
+    quasi_identifiers: [gender]
+  order_items:
+    allowed: [id, order_id, user_id, product_id, inventory_item_id, status, created_at, shipped_at, delivered_at, returned_at, sale_price]
+  products:
+    allowed: [id, cost, category, name, brand, retail_price, department, sku, distribution_center_id]
+
+# One line per allowed column. These are shown to the SQL writer, so they say what a column means, not what the
+# data holds: the values are read from the live data (Q4), never guessed here.
+descriptions:
+  users:
+    id: customer ID (an internal number)
+    age: customer age in years
+    gender: customer gender
+    state: customer state or region
+    city: customer city
+    country: customer country
+    traffic_source: marketing channel the customer came from
+    created_at: when the customer account was created
+  orders:
+    order_id: order ID
+    user_id: customer who placed the order
+    status: order status
+    gender: customer gender at the time of the order
+    created_at: when the order was placed
+    shipped_at: when the order was shipped
+    delivered_at: when the order was delivered
+    returned_at: when the order was returned
+    num_of_item: number of items in the order (for a brand manager, only the items of their brands)
+  order_items:
+    id: order item ID
+    order_id: order this item belongs to
+    user_id: customer who bought the item
+    product_id: product that was bought
+    inventory_item_id: stock item that was sold
+    status: item status
+    created_at: when the item was ordered
+    shipped_at: when the item was shipped
+    delivered_at: when the item was delivered
+    returned_at: when the item was returned
+    sale_price: price the customer paid for the item
+  products:
+    id: product ID
+    cost: what the product costs the store
+    category: product category
+    name: product name
+    brand: brand name
+    retail_price: list price of the product
+    department: department the product belongs to
+    sku: stock keeping unit
+    distribution_center_id: distribution center that holds the product

@@ -20,6 +20,7 @@ from src.cli.doctor import DoctorContext, render_checks, run_checks
 from src.cli.render import Renderer
 from src.config import Settings, load_settings
 from src.errors import AgentError, ConfigError, ErrorKind, crash_summary, friendly, new_trace_id
+from src.guards.allowlist import load_allowlist
 from src.llm.chaos import Chaos  # light: the Google SDK loads only with src.llm.gateway
 from src.logging_setup import setup_logging, shutdown_logging
 from src.observability import Tracer, purge_old_traces, viewer
@@ -107,6 +108,17 @@ def open_session(
         # Cheap local checks first, so a mistake in them is not reported after a wait on the network.
         db.migrate()
         personas, persona_name = _open_personas(settings)
+        allowlist = load_allowlist(settings)  # plan 05: no valid allow-list, no column the agent may use
+        if not allowlist.reviewed_against_live:
+            if settings.guards.require_reviewed_allowlist:
+                raise ConfigError(
+                    "schema_allowlist.yaml has not been reviewed against the live schema, so the chat cannot start. "
+                    "It was written from knowledge of the dataset, and a column under the wrong heading would quietly weaken the privacy rules.",
+                    fix="Run: python -m src.cli.main doctor --refresh, then pytest -m live -s tests/test_live_sql_guard.py. When both pass and the "
+                        "PII split is agreed with the owner, set reviewed_against_live: true in schema_allowlist.yaml "
+                        "(or set guards.require_reviewed_allowlist: false in config.yaml to start anyway).",
+                )
+            log.warning("schema_allowlist.yaml has not been marked as reviewed against the live schema (reviewed_against_live)")
         existing = None
         if conversation:
             existing = db.get_conversation(conversation, user.user_id)
@@ -129,8 +141,11 @@ def open_session(
         for warning in loaded.warnings:
             log.warning("%s", warning)
             renderer.warning(warning)
+        # A listed column that is not in BigQuery stops startup (the file is wrong). A live column that is in neither list
+        # stays hidden and is logged. Only now can the catalog show the agent any column (plan 03's hand-off).
+        catalog = loaded.catalog.with_policy(allowlist)
         # `doctor` audits every user and shows close matches. The chat checks this user and names no other brands.
-        check_brand_mapping(directory, loaded.catalog, only_user=user.user_id, suggest_names=False)
+        check_brand_mapping(directory, catalog, only_user=user.user_id, suggest_names=False)
 
         if existing is not None:
             conversation_id, turn_count = conversation, existing["turn_count"]  # turn IDs carry on, never restart
@@ -154,7 +169,7 @@ def open_session(
         personas=personas,
         persona_name=persona_name,
         tracer=Tracer.from_settings(settings, debug_prompts=debug_prompts),
-        catalog=loaded.catalog,
+        catalog=catalog,
     )
 
 
