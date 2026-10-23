@@ -37,6 +37,7 @@ from src import pii
 from src.config import Settings
 from src.errors import REFUSAL_KINDS, AgentError, ErrorKind, crash_summary, new_trace_id
 from src.observability.metrics import GUARDS, Pricing, TurnMetrics, write_run_row
+from src.scalars import plain
 
 log = logging.getLogger(__name__)
 
@@ -78,18 +79,11 @@ def _text(value: str) -> str:
     return masked if len(masked) <= MAX_STRING else masked[: MAX_STRING - 1] + "…"
 
 
-def _plain(value: Any) -> Any:
-    """A numpy scalar (np.int64, np.bool_, a 0-d array) as the Python value. A Series or array is not one."""
-    if type(value).__module__ == "numpy" and getattr(value, "shape", None) == () and hasattr(value, "item"):
-        return value.item()
-    return value
-
-
 def clean(value: Any, _depth: int = 0) -> Any:
     """Make a value safe to store: masked strings, real numbers, no rows, no objects, no NaN."""
     if isinstance(value, Enum):
         value = value.value
-    value = _plain(value)
+    value = plain(value)
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, numbers.Integral):

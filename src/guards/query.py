@@ -23,6 +23,10 @@ from typing import Any
 
 _KEY = secrets.token_bytes(32)  # never written anywhere; a new one per process
 
+# `GuardedQuery.scope_label` for a user who sees every brand. The SQL Guard writes it and the Result Guard compares with it
+# (plan 06, S15), so both use this one constant.
+ALL_BRANDS_LABEL = "all brands"
+
 
 @dataclass(frozen=True)
 class ArrayParam:
@@ -59,7 +63,7 @@ class GuardedQuery:
     limit: int  # the LIMIT of the outermost query as it runs
     rewrites: tuple[str, ...]  # rule IDs applied, for the trace
     fingerprint: str  # hash of the normalized original tree, for "same SQL twice" (3.10)
-    scope_label: str  # "your brands: A, B" or "all brands", for the Composer (S15)
+    scope_label: str  # "your brands: A, B" or ALL_BRANDS_LABEL, for the Composer (S15)
     seal: str = field(default="", repr=False)  # set by `issue`; see the module docstring
 
     def __init_subclass__(cls, **kwargs: Any) -> None:

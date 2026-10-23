@@ -40,7 +40,7 @@ from src.data_access.errors_map import normalize_message
 from src.errors import AgentError, ConfigError, ErrorKind, crash_summary
 from src.guards.allowlist import Allowlist, fold
 from src.guards.lineage import Analysis, LineageTooComplex, analyze, outer_selects, source_names, unwrap
-from src.guards.query import ArrayParam, GuardedQuery
+from src.guards.query import ALL_BRANDS_LABEL, ArrayParam, GuardedQuery
 from src.guards.refusals import NO_RANKED_LISTS_TEXT, violation
 from src.guards.scope_views import BRANDS_PARAM, ScopeViews, ViewMode, base_table_refs, strip_table_paths
 from src.observability import guard_decision, span
@@ -354,7 +354,7 @@ class SQLGuard:
             limit=limit,
             rewrites=tuple(rewrites),
             fingerprint=fingerprint,
-            scope_label="all brands" if mode == "all" else "your brands: " + ", ".join(user.brands),
+            scope_label=ALL_BRANDS_LABEL if mode == "all" else "your brands: " + ", ".join(user.brands),
         )
 
     # steps 1 and 2: parse, one SELECT -------------------------------------------------------------------
