@@ -98,16 +98,36 @@ def open_session(
 
     db = Database.from_settings(settings)
     try:
+        # Cheap local checks first, so a mistake in them is not reported after a wait on the network.
         db.migrate()
         personas, persona_name = _open_personas(settings)
+        existing = None
         if conversation:
-            row = db.get_conversation(conversation, user.user_id)
-            if row is None:
+            existing = db.get_conversation(conversation, user.user_id)
+            if existing is None:
                 raise ConfigError(
                     f"Conversation '{conversation}' was not found for user '{user.user_id}'.",
                     fix="Leave out --conversation to start a new one.",
                 )
-            conversation_id, turn_count = conversation, row["turn_count"]  # turn IDs carry on, never restart
+
+        # S1: a typo in a brand name must stop startup, not become an empty scope that looks like "no sales".
+        # With BigQuery down a recent saved copy is used (and said so); otherwise this raises and we stop.
+        # Imported here: BigQuery and pandas load only when a chat starts, so `trace`, `metrics` and a broken-install
+        # `doctor` never pay for them. The check is the last step before the conversation is created, so a failure
+        # leaves no conversation behind.
+        with renderer.progress("Checking the data connection..."):  # the imports are part of the wait
+            from src.data_access.brand_check import check_brand_mapping
+            from src.data_access.catalog import load_catalog
+
+            loaded = load_catalog(settings)
+        for warning in loaded.warnings:
+            log.warning("%s", warning)
+            renderer.warning(warning)
+        # `doctor` audits every user and shows close matches. The chat checks this user and names no other brands.
+        check_brand_mapping(directory, loaded.catalog, only_user=user.user_id, suggest_names=False)
+
+        if existing is not None:
+            conversation_id, turn_count = conversation, existing["turn_count"]  # turn IDs carry on, never restart
         else:
             conversation_id, turn_count = db.create_conversation(user.user_id), 0
     except BaseException:
@@ -127,6 +147,7 @@ def open_session(
         personas=personas,
         persona_name=persona_name,
         tracer=Tracer.from_settings(settings, debug_prompts=debug_prompts),
+        catalog=loaded.catalog,
     )
 
 
@@ -208,8 +229,9 @@ def chat(
 @app.command()
 def doctor(
     config: Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml.")] = None,
+    refresh: Annotated[bool, typer.Option("--refresh", help="Read the BigQuery schema and brand list again instead of using the saved copy.")] = False,
 ) -> None:
-    """Check the setup: Python, packages, config, users, keys, credentials and the database."""
+    """Check the setup: Python, packages, config, users, keys, credentials, the database and BigQuery."""
     renderer = Renderer()
     try:
         settings, error = load_settings(config), None
@@ -218,7 +240,9 @@ def doctor(
     except Exception as exc:  # noqa: BLE001 - a diagnostic must still print its checks
         settings, error = None, ConfigError(f"The config could not be loaded ({crash_summary(exc)}).")
     try:
-        checks = run_checks(DoctorContext(settings=settings, config_error=error))
+        if settings is not None:
+            setup_logging(settings)  # the BigQuery checks log to the masked app.log, not to the screen
+        checks = run_checks(DoctorContext(settings=settings, config_error=error, refresh=refresh))
     finally:
         shutdown_logging()
     render_checks(renderer, checks)

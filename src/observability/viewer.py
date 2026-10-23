@@ -227,7 +227,7 @@ def show_trace(
 
 # the metrics summary ---------------------------------------------------------------------------
 
-def _fmt_bytes(count: int) -> str:
+def fmt_bytes(count: int) -> str:
     size = float(count)
     for unit in ("B", "KiB", "MiB", "GiB"):
         if size < 1024:
@@ -275,7 +275,7 @@ def render_summary(console: Console, summary: MetricsSummary) -> None:
         row("Estimated cost", "not set (fill llm.pricing_usd_per_1m in config.yaml)" if summary.unpriced_turns else "n/a")
     row(
         f"BigQuery {summary.month}",
-        f"{_fmt_bytes(summary.bytes_billed_month)} billed by all users ({_pct(summary.free_tier_fraction)} of the 1 TiB free tier)",
+        f"{fmt_bytes(summary.bytes_billed_month)} billed by all users ({_pct(summary.free_tier_fraction)} of the 1 TiB free tier)",
         "bold yellow" if summary.free_tier_warning else "",
     )
     console.print(grid)

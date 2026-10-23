@@ -68,7 +68,7 @@ def test_a_credentials_file_that_does_not_exist_is_reported(config_path, monkeyp
     assert "points to a file that does not exist" in result.output
 
 
-def test_users_without_brands_or_with_placeholder_brands_are_warnings_not_failures(project, config_path, monkeypatch, fake_google_auth):
+def test_users_without_brands_or_with_placeholder_brands_are_flagged(project, config_path, monkeypatch, fake_google_auth):
     monkeypatch.setenv("GEMINI_API_KEY", "k")
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "p")
     (project / "users.yaml").write_text(
@@ -76,10 +76,13 @@ def test_users_without_brands_or_with_placeholder_brands_are_warnings_not_failur
         encoding="utf-8",
     )
     result = run_doctor(config_path)
-    assert result.exit_code == 0
+    # users.yaml is only a warning, but the chat refuses to start on a placeholder (plan 03), so the brand check fails.
+    assert result.exit_code == 1
     assert "[warn] users.yaml" in result.output
     assert "no brands for: nobrands" in result.output
     assert "placeholder brand names for: alice" in result.output
+    assert '[FAIL] Brand mapping: alice: "<verified brand 1>" is still a placeholder.' in result.output
+    assert "Top brands by item count: Nike (1,200), Levi's (900)." in result.output
 
 
 def test_a_bad_users_file_fails_and_names_the_problem(project, config_path):

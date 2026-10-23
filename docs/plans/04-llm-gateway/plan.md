@@ -163,5 +163,6 @@ tests/test_gateway.py  test_limiter.py  test_breaker.py  test_budget.py  test_ch
 
 ## Hand-off
 - Plan 07 builds one `TurnBudget` per turn, calls `upgrade()` after the Input Guard, and passes it to every `generate()` call and to `SafeQueryRunner`.
+- Plan 03's `SafeQueryRunner` reads `budget.bytes_remaining` (a property) and calls `charge_bytes(n)` and `check_time()`. Add `bytes_remaining` to `TurnBudget`.
 - Plan 09 uses `fake.py` and the chaos seeds for the resilience tests.
 - Plan 11 documents the full production chain including Vertex AI.

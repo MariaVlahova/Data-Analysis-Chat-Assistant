@@ -6,8 +6,9 @@
 #   - An EMPTY brand list means NO access. It is never read as "all brands".
 #   - Only role: ceo may set all_brands: true. That is the only way to see every brand.
 #
-# PLACEHOLDER BRANDS: plan 03 replaces the "<verified brand N>" names with real brands from the top
-# brands by item count. Do not guess brand names here. `doctor` warns until they are replaced.
+# PLACEHOLDER BRANDS: replace the "<verified brand N>" names with real brands from the top brands by
+# item count. Do not guess brand names here. The chat refuses to start until they match the data (plan 03);
+# after `gcloud auth application-default login`, `python -m src.cli.main doctor` lists the top brands.
 users:
   alice:
     name: Alice

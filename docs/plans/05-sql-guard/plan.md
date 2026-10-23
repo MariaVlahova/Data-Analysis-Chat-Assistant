@@ -210,6 +210,8 @@ Acceptance: the whole matrix passes. A fuzz test of 200 mutated queries (case, q
 - The inline views add joins to every query. Check the dry-run bytes on a few real queries. The tables are small, so this should stay far under the cap.
 
 ## Hand-off
+- Plan 03's `SafeQueryRunner` runs only the types in `safe_runner.ACCEPTED_QUERY_TYPES` (now just `SystemQuery`). Add `GuardedQuery` to that tuple, and nothing else; a query of any other type is refused with rule `UNGUARDED_QUERY`.
+- Plan 03's `SchemaCatalog.with_policy(allowlist)` reconciles the file with the live schema. `Allowlist` needs `table_names()`, `allowed(table)`, `blocked(table)` and `describe(table, column)`, and an unknown table has no allowed or blocked columns. Call `with_policy` at startup; `overview()` and `prune()` refuse to list anything before it.
 - Plan 06 reads `id_columns`, `per_customer`, `demographic` and `k_column`.
 - Plan 07 passes `scope_label` to the Composer, uses `fingerprint` for loop stops, shows the refusal text, and gives the SQL writer a short rule list.
 - Plan 09 extends the matrix and adds the attack prompts.
