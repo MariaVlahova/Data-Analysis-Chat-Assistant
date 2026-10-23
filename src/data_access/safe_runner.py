@@ -23,6 +23,7 @@ from src.config import Settings
 from src.data_access.bq_client import BigQueryRunner
 from src.data_access.errors_map import Phase, classify, job_may_still_run, setup_error
 from src.errors import AgentError, ErrorKind, crash_summary
+from src.guards.query import ArrayParam, GuardedQuery
 from src.llm.budget import call_timeout
 from src.observability import current_trace_id, guard_decision, span, turn_metrics
 from src.observability.tracing import Span
@@ -91,9 +92,10 @@ class SystemQuery:
 
 
 # The only query types `run` and `dry_run` accept. A structural match is not enough: any object with `.sql` and
-# `.params` would otherwise run, including raw model SQL with no brand scope. Plan 05 adds its `GuardedQuery` here
-# (and nothing else should be added); until then only our own fixed SQL runs.
-ACCEPTED_QUERY_TYPES: tuple[type, ...] = (SystemQuery,)
+# `.params` would otherwise run, including raw model SQL with no brand scope. A `GuardedQuery` comes from plan 05's
+# SQL Guard and nowhere else, and carries a seal that `_require_accepted` checks (`src/guards/query.py`); a `SystemQuery`
+# is our own fixed SQL. Nothing else should ever be added here.
+ACCEPTED_QUERY_TYPES: tuple[type, ...] = (SystemQuery, GuardedQuery)
 
 
 @dataclass(frozen=True)
@@ -140,6 +142,15 @@ def _faultable(gq: QueryLike) -> bool:
 
 def _param_names(gq: QueryLike) -> list[str]:
     return [str(getattr(param, "name", "?")) for param in gq.params]
+
+
+def _bq_params(gq: QueryLike) -> list[Any]:
+    """The query's parameters as BigQuery's. The SQL Guard hands over plain `ArrayParam`s because nothing outside
+    this package may import the BigQuery library; a `SystemQuery` brings its own, already in BigQuery's form."""
+    return [
+        bigquery.ArrayQueryParameter(param.name, param.element_type, list(param.values)) if isinstance(param, ArrayParam) else param
+        for param in gq.params
+    ]
 
 
 class SafeQueryRunner:
@@ -225,14 +236,16 @@ class SafeQueryRunner:
 
     @staticmethod
     def _require_accepted(gq: QueryLike) -> None:
-        if not isinstance(gq, ACCEPTED_QUERY_TYPES):
+        # A GuardedQuery must also be authentic: still exactly what the SQL Guard sealed. `dataclasses.replace(gq, sql=...)`
+        # makes an instance too, but not one with a matching seal.
+        if not isinstance(gq, ACCEPTED_QUERY_TYPES) or (isinstance(gq, GuardedQuery) and not gq.authentic):
             guard_decision("sql", "block", rule="UNGUARDED_QUERY", query_type=type(gq).__name__)
             raise AgentError(
                 ErrorKind.GUARD_VIOLATION, detail=f"a {type(gq).__name__} did not come from the SQL Guard", rule_id="UNGUARDED_QUERY"
             )
 
     def _start_dry_run(self, gq: QueryLike, timeout: float) -> Any:
-        config = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False, query_parameters=list(gq.params))
+        config = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False, query_parameters=_bq_params(gq))
         return self._bq.client.query(gq.sql, job_config=config, retry=None, job_retry=None, timeout=timeout)
 
     def _call_timeout(self, budget: BudgetLike | None) -> float:
@@ -298,7 +311,7 @@ class SafeQueryRunner:
         config = bigquery.QueryJobConfig(
             maximum_bytes_billed=self._config.max_bytes_billed,
             labels=job_labels(),
-            query_parameters=list(gq.params),
+            query_parameters=_bq_params(gq),
             use_query_cache=True,
         )
         if hasattr(config, "job_timeout_ms"):  # present in google-cloud-bigquery 3.46.2; older versions rely on the client timeout

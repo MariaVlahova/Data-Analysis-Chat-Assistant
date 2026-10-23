@@ -22,6 +22,11 @@ guards:
   rows_to_model: 50                  # [PROPOSED] NFR14
   allow_ranked_customer_lists: true  # S7 rule still open
   max_input_chars: 2000
+  require_reviewed_allowlist: true   # plan 05: the chat starts only once schema_allowlist.yaml says reviewed_against_live: true
+                                     # (a person compared it with the live schema and agreed the PII split). false: start with a warning.
+  denied_functions: []               # plan 05: functions to refuse IN ADDITION to the ones built into the SQL Guard
+                                     # (EXTERNAL_QUERY, ML.*, AI.*, OBJ.*, SESSION_USER, ... see ALWAYS_DENIED_FUNCTIONS in src/config.py).
+                                     # An entry is a function name or NAMESPACE.* for a whole namespace, for example [FARM_FINGERPRINT, "SAFE.*"].
 
 loop:
   max_subquestions: 4                # [PROPOSED]

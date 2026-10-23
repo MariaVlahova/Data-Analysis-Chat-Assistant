@@ -62,6 +62,7 @@ Two things the plans that emit spans must do themselves: a model call is **both*
 | `input_guard`, `context_assembly`, `planner`, `sql_loop`, `result_guard`, `evidence_check`, `composer`, `output_guard`, `tool_router`, `hitl_gate` | 07 | step status, counts |
 | `llm.call` | 04 | step, model, attempt, tokens in/out, latency, retry reason, fallback used, prompt version |
 | `bq.dry_run`, `bq.query` | 03 | final SQL (masked), bytes processed, bytes billed, rows, cache hit, error kind |
+| `guard.sql` span (kind `guard`) | 05 | one around every SQL Guard check, holding its `guard.decision` event. Attributes: scope mode, fingerprint, tables, limit, rewrites, per_customer, demographic. Never the SQL (the `bq.*` spans hold that, masked) |
 | `guard.decision` event | 05, 06, 07, 08 | guard, outcome, rule ID |
 | `hitl.requested`, `hitl.approved`, `hitl.denied` events | 07, 08 | level, count, id-set hash (never the report text) |
 | `numeric_check` event | 07 | number checked, matching sub-question ID (the provenance gap in the checklist) |

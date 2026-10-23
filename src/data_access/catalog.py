@@ -27,10 +27,11 @@ from src.config import Settings
 from src.data_access.safe_runner import SafeQueryRunner, SystemQuery
 from src.errors import AgentError, ConfigError, ErrorKind, crash_summary
 from src.fileutil import atomic_write_text
+from src.guards.allowlist import REQUIRED_TABLES
 
 log = logging.getLogger(__name__)
 
-TABLES = ("orders", "order_items", "products", "users")
+TABLES = REQUIRED_TABLES  # one list of the dataset's tables, kept in the allow-list module (it needs no BigQuery import)
 CACHE_DIR_NAME = "cache"
 SCHEMA_FILE = "schema.json"
 BRANDS_FILE = "brands.json"

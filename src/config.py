@@ -5,6 +5,7 @@ A typo in a key stops startup (`extra="forbid"`). Secrets never live in YAML.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -39,11 +40,38 @@ class BigQueryConfig(_Section):
     transient_retries: int = Field(2, ge=0)
 
 
+_FUNCTION_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*(\.\*)?$")
+
+# Plan 05, step 3. The SQL Guard always refuses these, whatever `guards.denied_functions` says: a typo or an emptied
+# list in config.yaml must not switch a protection off. A name is matched without regard to case, and `ML.*` stands
+# for every function in the ML namespace.
+ALWAYS_DENIED_FUNCTIONS = (
+    "EXTERNAL_QUERY",  # federated queries to other databases
+    "ML.*", "AI.*", "VECTOR_SEARCH", "OBJ.*",  # model calls and vector search: cost, and data leaves BigQuery
+    "SESSION_USER",  # the account name of whoever runs the query
+    "APPENDS", "CHANGES", "EXTERNAL_OBJECT_TRANSFORM",  # table functions that read history or files
+)
+
+
 class GuardsConfig(_Section):
     k_anonymity: int = Field(10, ge=2)  # [PROPOSED] NFR13
     rows_to_model: int = Field(50, ge=1)  # [PROPOSED] NFR14
     allow_ranked_customer_lists: bool = True  # S7 rule still open
     max_input_chars: int = Field(2000, ge=1)
+    denied_functions: list[str] = []  # plan 05, step 3: refused IN ADDITION to ALWAYS_DENIED_FUNCTIONS
+    # Plan 05: the chat does not start while schema_allowlist.yaml says `reviewed_against_live: false`. The file was written
+    # from knowledge of the dataset and nothing in it can prove it right; false lets the chat start with a warning.
+    require_reviewed_allowlist: bool = True
+
+    @field_validator("denied_functions")
+    @classmethod
+    def _valid_function_names(cls, names: list[str]) -> list[str]:
+        # fullmatch: `$` would also accept a trailing newline (a YAML block scalar makes one), and a name with a newline
+        # in it never matches a function, so the denial would silently do nothing.
+        bad = [name for name in names if not _FUNCTION_PATTERN.fullmatch(name)]
+        if bad:
+            raise ValueError(f"not a function name or NAMESPACE.* pattern: {', '.join(repr(name) for name in bad)}")
+        return names
 
 
 class LoopConfig(_Section):
