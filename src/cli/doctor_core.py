@@ -25,6 +25,7 @@ class DoctorContext:
     config_error: ConfigError | None = None
     adc_project: str | None = None  # project found in the default credentials, set by the credentials check
     refresh: bool = False  # `doctor --refresh`: read the schema and brand list again instead of using the saved copy
+    live: bool = False  # `doctor --live`: also call Gemini (list the models, make one small call)
     shared: dict[str, Any] = field(default_factory=dict)  # work one check does for the next (the loaded catalog)
 
 

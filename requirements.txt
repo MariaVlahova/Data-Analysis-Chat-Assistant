@@ -19,8 +19,9 @@ pyarrow>=16.0
 # SQL parsing (plan 05)
 sqlglot>=25.0
 
-# Gemini (plan 04)
+# Gemini (plan 04). httpx comes with google-genai; src/llm names its timeout and network errors, so it is listed.
 google-genai>=1.0
+httpx>=0.27
 
 # Agent graph and checkpoints (plans 07, 08)
 langgraph>=0.2

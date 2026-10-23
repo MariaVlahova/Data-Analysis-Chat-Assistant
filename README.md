@@ -4,8 +4,9 @@ A chat agent that answers business questions about the `bigquery-public-data.the
 Brand managers see only their own brands; the CEO sees all of them.
 
 > **Status:** plans 01 (foundation) and 02 (observability) are done: project skeleton, config, users, storage, the CLI
-> shell, and tracing, masked logs and metrics. The chat currently **echoes** your question. The agent behind it
-> arrives with plans 03 to 07.
+> shell, and tracing, masked logs and metrics. Plans 03 (BigQuery access) and 04 (Gemini gateway) are built and tested
+> offline; their live steps need a Google sign-in and a Gemini key (see each plan's "Still to do"). The chat currently
+> **echoes** your question. The agent behind it arrives with plans 05 to 07.
 > This README holds the setup section only. Plan 11 completes it (architecture, example run, limits).
 
 ## Prerequisites
@@ -35,6 +36,9 @@ cp .env.example .env                # Windows: copy .env.example .env
 
 # 5. Check the setup. It prints one line per check and the fix for each failure.
 python -m src.cli.main doctor
+#    Add --live to also call Gemini: it checks the model IDs in config.yaml against your key and makes one
+#    small call (a little of the free-tier quota).
+python -m src.cli.main doctor --live
 
 # 6. Chat
 python -m src.cli.main chat --user alice
@@ -50,7 +54,13 @@ python -m src.cli.main chat --user alice            # a brand manager
 python -m src.cli.main chat --user ceo              # sees all brands
 python -m src.cli.main chat --user alice --debug    # log lines and tracebacks on screen
 python -m src.cli.main chat --user alice --conversation conv-1a2b3c4d   # continue a conversation
+python -m src.cli.main chat --user alice --chaos harsh --chaos-seed 7   # inject faults on purpose; the same seed replays the run
 ```
+
+`--chaos mild|harsh` injects model errors (429, 503, timeouts, unusable JSON) into about 15% (mild) or 40% (harsh) of
+model calls, BigQuery errors into fewer BigQuery calls, and now and then a broken SQL query, to show that retries, the
+circuit breaker and the fallback model keep the chat alive. Without `--chaos-seed` a seed is drawn and printed in the banner. Injected faults replace the call, so
+they use no quota. The faults only start to act once the agent is connected (plan 07).
 
 Inside the chat: `/help`, `/quit`, `/new` (new conversation), `/trace [id] [--raw]` (the steps of a turn, by default
 the last one) and `/metrics [--last N]` (totals and rates). You see your own turns; the CEO sees everyone's.

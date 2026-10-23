@@ -8,9 +8,10 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
 
 from src.errors import ConfigError
+from src.llm_steps import LLM_STEP_NAMES, STEP_DEFAULTS
 from src.yaml_utils import load_yaml, validation_message
 
 DEFAULT_CONFIG_NAME = "config.yaml"
@@ -100,6 +101,19 @@ class ModelPrice(_Section):
     out: float = Field(ge=0)
 
 
+class StepSettings(_Section):
+    temperature: float = Field(0.0, ge=0, le=2)
+    max_output_tokens: int = Field(2048, gt=0)
+
+
+def _default_steps() -> dict[str, StepSettings]:
+    """Every step with its own defaults (`src/llm_steps.py`)."""
+    return {
+        step.value: StepSettings(temperature=temperature, max_output_tokens=max_output_tokens)
+        for step, (temperature, max_output_tokens) in STEP_DEFAULTS.items()
+    }
+
+
 class LlmConfig(_Section):
     """Plan 04 owns these keys and may add more."""
 
@@ -109,7 +123,26 @@ class LlmConfig(_Section):
     rate_limits: dict[str, RateLimit] = {}  # per model ID, overrides default_rpm
     retry: LlmRetry = LlmRetry()
     breaker: LlmBreaker = LlmBreaker()
+    request_timeout_s: float = Field(30.0, gt=0)  # one attempt; the turn's remaining time wins if it is less (impl)
+    steps: dict[str, StepSettings] = Field(default_factory=_default_steps)  # a step you leave out keeps its default
     pricing_usd_per_1m: dict[str, ModelPrice] | None = None  # plan 02: null until filled, we never invent prices
+
+    @field_validator("steps", mode="before")
+    @classmethod
+    def _fill_in_step_defaults(cls, given: object) -> object:
+        """A step you leave out keeps its defaults, and so does a setting you leave out of a step you do list:
+        `composer: {temperature: 0.5}` keeps the Composer's own token cap, not a generic one."""
+        if not isinstance(given, dict):
+            return given  # the normal validation reports it
+        unknown = sorted(str(name) for name in set(given) - set(LLM_STEP_NAMES))
+        if unknown:
+            raise ValueError(f"unknown step(s) {', '.join(unknown)}; the steps are {', '.join(LLM_STEP_NAMES)}")
+        merged: dict[str, object] = {name: settings.model_dump() for name, settings in _default_steps().items()}
+        for name, value in given.items():
+            if isinstance(value, StepSettings):
+                value = value.model_dump(exclude_unset=True)  # only what was set, so its generic defaults do not win
+            merged[name] = {**merged[name], **value} if isinstance(value, dict) else value
+        return merged
 
 
 class DeleteConfig(_Section):

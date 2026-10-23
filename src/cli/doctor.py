@@ -1,7 +1,7 @@
 """`doctor`: one pass/fail line per setup check, with the fix for each failure (NFR28, Q14).
 
-Plan 03's BigQuery checks live in `doctor_bigquery.py` and are registered below, after the setup checks. Plan 04
-adds a Gemini ping (only with `--live`) the same way, with `register_check`.
+Plan 03's BigQuery checks live in `doctor_bigquery.py` and are registered below, after the setup checks. Plan 04's
+Gemini checks (`doctor_gemini.py`, only with `--live`) follow them.
 
 This module must stay importable on a broken install, so `check_packages` can say what is missing: nothing
 heavy (pandas, BigQuery) is imported at module level here or in `doctor_bigquery.py`.
@@ -18,6 +18,7 @@ from rich.text import Text
 from src.access.users import PLACEHOLDER_BRAND, load_user_directory, users_path
 from src.cli.doctor_bigquery import BIGQUERY_CHECKS
 from src.cli.doctor_core import Check, CheckFn, DoctorContext, Status
+from src.cli.doctor_gemini import GEMINI_CHECKS
 from src.cli.render import Renderer
 from src.config import Secrets
 from src.errors import AgentError, ConfigError
@@ -40,6 +41,7 @@ REQUIRED_MODULES = [
     ("pyarrow", "pyarrow"),
     ("sqlglot", "sqlglot"),
     ("google.genai", "google-genai"),
+    ("httpx", "httpx"),
     ("langgraph", "langgraph"),
     ("langgraph.checkpoint.sqlite", "langgraph-checkpoint-sqlite"),
     ("pytest", "pytest"),
@@ -174,6 +176,8 @@ def check_database(ctx: DoctorContext) -> Check:
 # Registered last, so they run after the credentials and project checks they depend on.
 for _bigquery_check in BIGQUERY_CHECKS:
     register_check(_bigquery_check)
+for _gemini_check in GEMINI_CHECKS:  # only call Gemini with --live
+    register_check(_gemini_check)
 
 
 def run_checks(ctx: DoctorContext) -> list[Check]:
