@@ -12,6 +12,7 @@ from src.cli import main as cli_main
 from src.cli.main import app
 from src.errors import AgentError, ErrorKind
 from src.observability import event, guard_decision, span, turn_metrics
+from tests.agent_support import echo_turn
 
 runner = CliRunner(env={"COLUMNS": "200"})
 CANARY = "canary@example.test"
@@ -81,7 +82,8 @@ def test_nothing_the_canary_touched_is_on_disk_after_the_failed_turn(project, co
 
 # the normal turn ------------------------------------------------------------------------------------
 
-def test_every_question_leaves_a_trace_and_one_row_with_the_user_hash_only(project, config_path):
+def test_every_question_leaves_a_trace_and_one_row_with_the_user_hash_only(project, config_path, monkeypatch):
+    monkeypatch.setattr(cli_main, "run_turn", echo_turn)
     result = chat(config_path, "alice", "hello\nagain\n/quit\n")
     assert result.exit_code == 0
     rows = runs(project)
@@ -98,7 +100,8 @@ def test_slash_commands_and_blank_lines_do_not_count_as_turns(project, config_pa
     assert runs(project) == []
 
 
-def test_a_bare_slash_trace_shows_the_turn_just_asked_about(config_path):
+def test_a_bare_slash_trace_shows_the_turn_just_asked_about(config_path, monkeypatch):
+    monkeypatch.setattr(cli_main, "run_turn", echo_turn)
     result = chat(config_path, "alice", "what sold best\n/trace\n/quit\n")
     assert "question: what sold best" in result.output and "echo" in result.output
 

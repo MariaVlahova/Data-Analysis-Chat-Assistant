@@ -1,6 +1,7 @@
 """Chat session state, slash commands and the top-level error boundary (NFR19, F36).
 
-`run_turn()` here is a stub that echoes. Plan 07 replaces it with the agent graph.
+`run_turn()` hands the line to the agent graph (plan 07, `src/agent/`). The graph has its own error boundary, so a failing
+step ends in an honest message; this module's boundary is the catch-all behind it.
 Every question runs inside `Tracer.start_turn` (plan 02): the trace file and the metrics row are written
 even when the turn crashes.
 """
@@ -13,12 +14,13 @@ from typing import TYPE_CHECKING, Callable
 from src.access.users import UserContext
 from src.cli.render import ProgressFn, Renderer
 from src.config import Settings
-from src.errors import REFUSAL_KINDS, AgentError, ConfigError, friendly, new_trace_id
-from src.observability import Tracer, TurnTrace, alerts, span, viewer
+from src.errors import REFUSAL_KINDS, AgentError, ConfigError, ErrorKind, friendly, new_trace_id
+from src.observability import Tracer, TurnTrace, alerts, viewer
 from src.personas import PersonaStore
 from src.storage.db import Database, turn_id
 
 if TYPE_CHECKING:  # annotations only: importing them would load BigQuery, pandas and the Google SDK for every CLI command
+    from src.agent.runtime import AgentRuntime
     from src.data_access.catalog import SchemaCatalog
     from src.llm.chaos import Chaos
 
@@ -37,13 +39,14 @@ class ChatSession:
     debug: bool = False
     chaos: str | None = None  # the --chaos level; the `chaos: true` flag of the metrics row
     chaos_seed: int | None = None  # the seed actually used, drawn when --chaos-seed was not given
-    chaos_engine: Chaos | None = None  # plan 04: plan 07 hands it to the gateway, the SQL writer node and SafeQueryRunner
+    chaos_engine: Chaos | None = None  # plan 04: handed to the gateway, the SQL writer node and SafeQueryRunner (plan 07)
     turn_count: int = 0  # turns so far in this conversation, stored in the database
     personas: PersonaStore | None = None  # None when persona.enabled is false
     persona_name: str | None = None
     tracer: Tracer | None = None  # built from the settings when not given
     last_trace_id: str | None = None  # the newest turn of this chat, for a bare /trace
-    catalog: SchemaCatalog | None = None  # plan 03: brands, latest date and live schema, read at startup for plan 07
+    catalog: SchemaCatalog | None = None  # plan 03: brands, latest date and live schema, read at startup
+    agent: AgentRuntime | None = None  # plan 07: the graph, its guards and tools, built once per chat
 
     def __post_init__(self) -> None:
         if self.tracer is None:
@@ -58,24 +61,20 @@ TurnFn = Callable[..., str]  # (session, text, *, trace_id, progress) -> answer 
 
 
 def run_turn(session: ChatSession, text: str, *, trace_id: str, progress: ProgressFn) -> str:
-    """Stub turn: echo the question. Plan 07 replaces this with the agent graph."""
-    progress("Thinking...")
-    with span("echo", "step", summary="stub turn: the question is echoed, nothing is looked up"):
-        lines = [
-            "**Echo only.** The agent is not connected yet, so nothing was looked up.",
-            "",
-            f"You asked: {text}",
-            "",
-            f"_{session.conversation_id}, {session.turn_id}, scope: {session.user.scope_mode}_",
-        ]
-        if session.personas is not None and session.persona_name:
-            try:
-                lines.append(f"_Persona: {session.personas.get(session.persona_name).label}_")
-            except ConfigError as exc:
-                # A broken persona file never blocks a turn: carry on with defaults (decision 3.11).
-                log.warning("persona %s unusable: %s", session.persona_name, exc.message)
-                lines.append(f"_Persona file problem, using no persona: {exc.message}_")
-    return "\n".join(lines)
+    """One typed line, through the agent graph. Returns the answer to print.
+
+    A refusal or a failure is raised as its `AgentError`, so the boundary in `handle_line` shows it in its own panel with the
+    trace ID, the same way as any other failure. When the graph is waiting for a confirmation, this line is the reply.
+    """
+    if session.agent is None:
+        raise AgentError(ErrorKind.INTERNAL, detail="the chat has no agent")
+    result = session.agent.run(
+        text=text, conversation_id=session.conversation_id, turn_id=session.turn_id, trace_id=trace_id,
+        user_hash=session.user.user_hash, progress=progress,
+    )
+    if result.error is not None:
+        raise result.error
+    return result.text
 
 
 # Slash commands ---------------------------------------------------------------------------------

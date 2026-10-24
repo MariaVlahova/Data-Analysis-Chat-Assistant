@@ -28,6 +28,10 @@ REFUSALS: dict[str, str] = {
     ),
     "SCOPE_REWRITE_INCOMPLETE": "I couldn't safely limit that query to the data you may see, so I did not run it.",
     "UNGUARDED_QUERY": "That query did not pass my safety checks, so I did not run it.",
+    "SESSION_LABEL": (
+        "Numbers such as \"Customer #48213\" are names for this conversation only. They are not customer IDs, so I can't look up "
+        "or follow one customer by them. I can show the ranked list again, or totals for groups of customers."
+    ),
 }
 
 # The ranked-list text above promises something that `guards.allow_ranked_customer_lists: false` takes away.

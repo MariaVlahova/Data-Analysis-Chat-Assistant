@@ -134,6 +134,7 @@ def open_session(
         # `doctor` never pay for them. The check is the last step before the conversation is created, so a failure
         # leaves no conversation behind.
         with renderer.progress("Checking the data connection..."):  # the imports are part of the wait
+            from src.agent.runtime import build_agent
             from src.data_access.brand_check import check_brand_mapping
             from src.data_access.catalog import load_catalog
 
@@ -146,6 +147,12 @@ def open_session(
         catalog = loaded.catalog.with_policy(allowlist)
         # `doctor` audits every user and shows close matches. The chat checks this user and names no other brands.
         check_brand_mapping(directory, catalog, only_user=user.user_id, suggest_names=False)
+        # The agent (plan 07): gateway, runner, the three guards, the tools and the graph. Built before the conversation is
+        # created, so a failure here (an sqlglot the guard was not checked against, for one) leaves no conversation behind.
+        agent = build_agent(
+            settings, user=user, catalog=catalog, allowlist=allowlist, personas=personas, persona_name=persona_name,
+            chaos=chaos_engine,
+        )
 
         if existing is not None:
             conversation_id, turn_count = conversation, existing["turn_count"]  # turn IDs carry on, never restart
@@ -170,6 +177,7 @@ def open_session(
         persona_name=persona_name,
         tracer=Tracer.from_settings(settings, debug_prompts=debug_prompts),
         catalog=catalog,
+        agent=agent,
     )
 
 
@@ -189,9 +197,8 @@ def banner(session: ChatSession) -> str:
         f"Conversation {session.conversation_id}. Type /help for commands, /quit to leave."
     )
     if session.chaos:
-        # Plan 07 connects the engine to the gateway and the query runner. Until then nothing consumes it, and the text says so.
-        text += (f"\nChaos mode {session.chaos} is on (seed {session.chaos_seed}), but the agent that receives the faults is "
-                 f"not connected yet (plan 07), so nothing is injected in this version. "
+        text += (f"\nChaos mode {session.chaos} is on (seed {session.chaos_seed}): faults are injected on purpose into model "
+                 f"calls, queries and the SQL the model writes, to show how the agent copes. "
                  f"Replay a run with --chaos {session.chaos} --chaos-seed {session.chaos_seed}.")
     return text
 

@@ -30,11 +30,11 @@ def test_the_banner_shows_the_level_and_the_seed_to_replay_the_run(config_path):
     assert "Chaos mode harsh" in result.output and "--chaos harsh --chaos-seed 7" in result.output
 
 
-def test_the_banner_does_not_claim_faults_are_injected_while_nothing_consumes_the_engine(config_path):
-    """Review finding: the banner promised faults, but the turn only echoes until plan 07. Plan 07 changes this text."""
+def test_the_banner_says_faults_are_injected_now_that_the_agent_consumes_the_engine(config_path):
+    """The banner used to say nothing was injected, because the turn only echoed. Plan 07 connected the engine."""
     output = " ".join(chat(config_path, "--chaos", "mild", "--chaos-seed", "3").output.split())
-    assert "not connected yet (plan 07)" in output and "nothing is injected in this version" in output
-    assert "injected on purpose" not in output
+    assert "faults are injected on purpose" in output
+    assert "not connected yet" not in output and "nothing is injected" not in output
 
 
 def test_without_a_seed_one_is_drawn_and_shown(config_path):

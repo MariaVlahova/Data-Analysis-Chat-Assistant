@@ -42,6 +42,7 @@ class ErrorKind(str, Enum):
     NUMERIC_UNGROUNDED = "NUMERIC_UNGROUNDED"
     STALE_CONFIRMATION = "STALE_CONFIRMATION"
     TOOL_FAILED = "TOOL_FAILED"
+    TOOL_TIMEOUT = "TOOL_TIMEOUT"
     INTERNAL = "INTERNAL"
 
 
@@ -53,6 +54,13 @@ class _Spec(NamedTuple):
 
 # A refusal is not a failure: shown in a "not possible" panel and counted as `refused` in the metrics (F7, F32).
 REFUSAL_KINDS = frozenset({ErrorKind.OUT_OF_SCOPE, ErrorKind.GUARD_VIOLATION, ErrorKind.INPUT_REJECTED})
+
+# Where a node falls back to what code can do instead of failing the turn.
+LLM_FAILURE_KINDS = frozenset({
+    ErrorKind.LLM_RATE_LIMITED, ErrorKind.LLM_UNAVAILABLE, ErrorKind.LLM_BAD_OUTPUT, ErrorKind.LLM_BLOCKED, ErrorKind.CIRCUIT_OPEN,
+})  # the model could not answer this time
+TURN_LIMIT_KINDS = frozenset({ErrorKind.BUDGET_EXHAUSTED, ErrorKind.TURN_TIMEOUT})  # the calls or the time of the turn are used up
+MODEL_FALLBACK_KINDS = LLM_FAILURE_KINDS | TURN_LIMIT_KINDS  # no model call can be made now
 
 _NARROW = "Try a narrower question, for example a shorter time range or one brand or category."
 
@@ -82,8 +90,12 @@ _SPECS: dict[ErrorKind, _Spec] = {
     ErrorKind.BUDGET_EXHAUSTED: _Spec(f"I reached the limit of work I can do for one question, so I stopped. {_NARROW}"),
     ErrorKind.TURN_TIMEOUT: _Spec(f"That took longer than the time limit, so I stopped. {_NARROW}"),
     ErrorKind.NUMERIC_UNGROUNDED: _Spec("I removed a number from my answer because I could not check it against the data."),
-    ErrorKind.STALE_CONFIRMATION: _Spec("The reports changed after I showed you the preview, so nothing was changed. Here is the new preview."),
+    ErrorKind.STALE_CONFIRMATION: _Spec("What I found changed after I showed you the preview, so nothing was changed. Here is the new preview."),
     ErrorKind.TOOL_FAILED: _Spec("That action failed and nothing was changed. Please try again. If it keeps failing, share the trace ID."),
+    # The tool may still finish after we stopped waiting, so this does not say "nothing was changed". Only a retry of the same
+    # request finds the first effect (the idempotency key holds the turn ID, Q23): the user's own retry in a later turn is a new
+    # request with a new key, which is why the message tells them to look first.
+    ErrorKind.TOOL_TIMEOUT: _Spec("That action took too long, and I can't tell whether it finished. Please check what changed before you try again."),
     ErrorKind.INTERNAL: _Spec("Something went wrong on my side. Your session is still open, so you can try again."),
 }
 

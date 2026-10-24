@@ -106,7 +106,7 @@ Every query takes `owner_id` from the `UserContext`, never from the arguments th
 
 ### Delete flow (F22 to F25; steps 1 to 4 are plan 07's nodes)
 1. Input Guard sets intent `delete_reports` and a selector. Shortcut edge to the Tool Router. No SQL. No Composer.
-2. `prepare_action` calls `find`. No match: "I found no reports matching that." and stop. Otherwise it builds the preview in code: a numbered list of titles and saved dates, the count, the level and the expected reply. It computes `id_set_hash = sha256(sorted ids)` and stores `pending_action` in state. Audit `delete_requested`.
+2. `prepare_action` calls `find`. No match: "I found no reports matching that." and stop. Otherwise it builds the preview in code: a numbered list of titles and saved dates, the count, the level and the expected reply. It computes `id_set_hash` (HMAC-SHA-256 of the sorted IDs, keyed with `Deps.hash_key`, `confirmation.id_set_hash(refs, key)`; plan 07) and stores `pending_action` in state. The finder is called through the graph's `_call` (span, `timeout_s`, typed errors), and its message when nothing matches goes through the Output Guard. Audit `delete_requested`.
 3. `hitl_gate`: the preview is the prompt, so the user confirms in **one turn**:
 
 | Level | When | Prompt | Accepted reply |
@@ -132,6 +132,8 @@ The only thing that can confirm is the user's typed reply, delivered as the resu
 
 ### Failure behavior
 A tool error returns `TOOL_FAILED`: an honest message with the trace ID, no half-done effect (transactions), and an audit row with outcome `failed`. A failed-job queue is design-only.
+
+The graph runs a tool on a worker thread and stops waiting after the manifest's `timeout_s` (`TOOL_TIMEOUT`, plan 07). So a tool must not rely on thread-bound resources: open the SQLite connection with `check_same_thread=False` (or open one per call) and keep writes in one transaction. A timed-out tool may still finish. The idempotency key holds the turn ID (Q23), so only a retry of the same request finds the first effect; a retry the user types in a later turn is a new request, and the `TOOL_TIMEOUT` message tells them to check their reports first.
 
 ## Files
 ```text

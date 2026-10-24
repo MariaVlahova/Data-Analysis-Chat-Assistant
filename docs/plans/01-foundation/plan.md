@@ -141,6 +141,7 @@ class ConfigError(Exception): ...    # startup problems only (bad config, unknow
 | `NUMERIC_UNGROUNDED` | 07 | Remove the number and say so (S11, Q29 default). |
 | `STALE_CONFIRMATION` | 08 | The ID set changed. Preview again (F24). |
 | `TOOL_FAILED` | 07, 08 | Honest message with trace ID. Failed-job queue is design-only. |
+| `TOOL_TIMEOUT` | 07, 08 | The tool did not finish within its manifest's `timeout_s`. It may still finish, so the message does not say "nothing was changed" and tells the user to check before trying again: the idempotency key holds the turn ID, so a retry in a later turn is a new request. |
 | `INTERNAL` | any | Catch-all at the CLI. Friendly message, masked traceback in the trace (F36). |
 
 ### Storage (`src/storage/db.py`)

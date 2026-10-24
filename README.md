@@ -3,10 +3,11 @@
 A chat agent that answers business questions about the `bigquery-public-data.thelook_ecommerce` dataset.
 Brand managers see only their own brands; the CEO sees all of them.
 
-> **Status:** plans 01 (foundation) and 02 (observability) are done: project skeleton, config, users, storage, the CLI
-> shell, and tracing, masked logs and metrics. Plans 03 (BigQuery access) and 04 (Gemini gateway) are built and tested
-> offline; their live steps need a Google sign-in and a Gemini key (see each plan's "Still to do"). The chat currently
-> **echoes** your question. The agent behind it arrives with plans 05 to 07.
+> **Status:** plans 01 to 07 are built. The chat runs the agent graph (plan 07): it checks the message, plans, writes
+> and guards the SQL, runs it, checks the numbers and the answer, and handles saving and deleting reports behind a
+> confirmation. Plans 03 to 05 and 07 were built and tested offline, with a scripted model and a fake BigQuery client;
+> their live steps need a Google sign-in and a Gemini key (see each plan's "Still to do"). Saved reports are held in
+> memory until plan 08 makes them real, so they do not survive closing the chat.
 > This README holds the setup section only. Plan 11 completes it (architecture, example run, limits).
 
 ## Prerequisites
@@ -60,7 +61,15 @@ python -m src.cli.main chat --user alice --chaos harsh --chaos-seed 7   # inject
 `--chaos mild|harsh` injects model errors (429, 503, timeouts, unusable JSON) into about 15% (mild) or 40% (harsh) of
 model calls, BigQuery errors into fewer BigQuery calls, and now and then a broken SQL query, to show that retries, the
 circuit breaker and the fallback model keep the chat alive. Without `--chaos-seed` a seed is drawn and printed in the banner. Injected faults replace the call, so
-they use no quota. The faults only start to act once the agent is connected (plan 07).
+they use no quota.
+
+What you can ask: questions about sales, products and customers (a total, a ranking, a trend), "why" and comparison
+questions that need several queries, reports with insights and action items, and what data is available. Customers
+appear only as labels such as `Customer #48213`, never by name. You can also say "save that", "list my reports",
+"delete the reports mentioning X" and "undo". A delete shows what it found and waits for your next line: `y` or `yes`
+for one report, `yes` for a short list, and `DELETE <n>` for "all" or ten or more. Anything else cancels. Every answer
+starts with how your question was read and which brands it covers, and ends with notes about anything that was hidden,
+cut or could not be answered.
 
 Inside the chat: `/help`, `/quit`, `/new` (new conversation), `/trace [id] [--raw]` (the steps of a turn, by default
 the last one) and `/metrics [--last N]` (totals and rates). You see your own turns; the CEO sees everyone's.
