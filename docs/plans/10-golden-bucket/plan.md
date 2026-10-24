@@ -1,6 +1,6 @@
 # Plan 10: Golden Bucket (optional)
-Status: not started
-Estimate: about 0.5 h (our estimate) · Depends on: 03, 05, 06, 07 · Blocks: none (plan 11 documents the design either way)
+Status: built and tested offline (157 tests in `tests/test_golden_*.py`, and 143 more in `tests/test_local_*.py` for the sample-data stand-in, all with a scripted model; see "As built"). Two things are NOT done and need a Google sign-in or the owner: a dry run of the seed SQL on real BigQuery (`pytest -m live -s tests/test_live_golden.py`, then `golden validate` with the live config), and the owner's review of the glossary definitions (Q6). A live question near a seed trio showing its ID in `/trace` is covered offline with a scripted model; it has not been run against Gemini.
+Estimate: about 0.5 h (our estimate; the sample-data stand-in that came with it is described in `docs/local-testing.md`) · Depends on: 03, 05, 06, 07 · Blocks: none (plan 11 documents the design either way)
 
 **Goal:** Define the trio format, seed a small set of brand-tagged trios and a glossary, and retrieve up to 3 similar trios per question above a similarity threshold with in-memory search.
 
@@ -110,20 +110,22 @@ Prints a pass or fail line per trio. A failing trio is not loaded. This makes th
 ## Files
 ```text
 glossary.yaml
-golden/seed/g-001.yaml … g-010.yaml
-src/golden/__init__.py  schema.py  index.py  glossary.py  validate.py
-tests/test_golden_schema.py  test_golden_index.py  test_golden_filters.py  test_golden_validate.py
+golden/seed/g-001.yaml … g-012.yaml
+src/golden/__init__.py  schema.py  index.py  glossary.py  validate.py  load.py
+src/cli/golden_cmd.py
+tests/golden_support.py  test_golden_schema.py  test_golden_index.py  test_golden_filters.py  test_golden_validate.py
+tests/test_golden_load.py  test_golden_graph.py  test_live_golden.py
 ```
 
 ## Tasks
-- [ ] `schema.py`: pydantic model for the trio. Loader that skips invalid files with a clear message.
-- [ ] Write about 10 seed trios and the glossary. Run `golden validate` on them.
-- [ ] `index.py`: TF-IDF build, cosine search, eligibility filter, per-step views.
-- [ ] `glossary.py`: term and alias lookup.
-- [ ] Wire `deps.golden` into `context_assembly`. Add the `golden.retrieve` span.
-- [ ] Tune `min_similarity` on probe questions. Record the value and the probes in a test.
-- [ ] `golden validate` command.
-- [ ] Optional check: run the golden cases with the index on and off and compare scores (plan 09).
+- [x] `schema.py`: pydantic model for the trio. Loader that skips invalid files with a clear message.
+- [x] Write about 10 seed trios and the glossary. Run `golden validate` on them.
+- [x] `index.py`: TF-IDF build, cosine search, eligibility filter, per-step views.
+- [x] `glossary.py`: term and alias lookup.
+- [x] Wire `deps.golden` into `context_assembly`. Add the `golden.retrieve` span.
+- [x] Tune `min_similarity` on probe questions. Record the value and the probes in a test.
+- [x] `golden validate` command.
+- [ ] Optional check: run the golden cases with the index on and off and compare scores (plan 09). Not done: plan 09 is not built.
 
 ## Tests and acceptance
 - A paraphrase of a seed question returns that trio at rank 1; an unrelated question returns nothing.
@@ -134,6 +136,32 @@ tests/test_golden_schema.py  test_golden_index.py  test_golden_filters.py  test_
 - Validation: a bad SQL trio, a trio with an email in the report, an unknown brand, and a missing field each fail with a clear reason; a good trio passes.
 - With `golden.enabled: false` the graph runs unchanged.
 - Acceptance: `golden validate` is green on the seed set, and a live question close to a seed trio shows the trio ID in `/trace`.
+
+## As built
+What differs from the plan above, and why.
+
+| Plan said | Built | Why |
+|---|---|---|
+| About 10 seed trios, `g-001` to `g-010` | 12, `g-001` to `g-012`: eight topics, two brand-specific (`g-009`, `g-010`), one draft (`g-011`), one retired (`g-012`) | One file for each filter to exercise |
+| Tokens are lower-case words, no stemming; start the threshold at 0.25 | Plural endings are folded (`customers` to `customer`, `categories` to `category`), the question counts twice as much as the notes and table names, and the default `golden.min_similarity` is **0.15** | Chosen on the probes in `tests/test_golden_index.py`: the weakest paraphrase scores about 0.175 and the strongest unrelated question about 0.10. At 0.25 four of the paraphrases were lost. Still no real stemming: `spending` and `spent` stay apart |
+| A word the index has never seen is ignored | It counts in the length of the question with the highest weight | So a long question of unrelated words cannot match on the two words it shares |
+| Hook in `context_assembly`: `deps.golden(question)` | `deps.golden(question, user)` and `deps.glossary(question)`, both `None` when `golden.enabled` is false. `GoldenBundle` (`load.py`) is what `build_agent(golden=...)` takes. The state holds `trio_examples` (question, notes, SQL) and `trio_report` (the best match's report excerpt) apart | The user is needed for the brand filter. Keeping the report apart means only the Composer's prompt builder is handed it |
+| `Tables` check | In `validate.py`, not in the schema | So a trio with a wrong table fails under the name "Tables" with the approved list |
+| Checks: schema, SQL, report, brands, tables, duplicates | Also: a brand name in the text that is not among the trio's own brands **fails** the trio (S5, for brand-agnostic and brand-specific trios alike); personal data is looked for in the question, notes and SQL as well as the report; an instruction-like phrase, a number in a brand-agnostic report, a `tables` list that does not match the SQL, and a file not named after its id are warnings | S5 is High. A trio that names another brand would reach that brand's managers |
+| `golden validate [path]` | Also `--offline`, which skips the brand list and the dry run and says so. When BigQuery cannot be read, the command skips them anyway and says so. The chat runs the offline checks (and the brand check, from the catalog) at startup; a trio that fails is left out with one warning | The chat must start without the data warehouse for the Golden Bucket; it never depends on it |
+| Glossary: a list of `term`, `aliases`, `definition` | Also `locked: true` for churn and last month, which the code already enforces (`locked_rules.py`). They stay in the file for the owner's review (Q6) and are not sent to the prompt twice. A test fails if a locked term is not in the code | No duplicate definitions in a prompt |
+| Wrapper `<untrusted_data source="golden_trio" id="g-003">` | Done for the SQL writer (one block per trio). The Planner's and the Composer's blocks hold several records in one wrapper and carry `source="golden_trio"` without an ID | Their builders take plain strings; the IDs are in the trace |
+| `golden.retrieve` span with IDs and scores | Also a `summary` attribute with the same IDs and scores, because `/trace` leaves lists out of its lines | The acceptance asks for the trio ID in `/trace` |
+| Brand-specific seeds | `g-009` is tagged `Maple & Co` and `g-010` `O'Hara Outfitters`: brands of the **sample data** (`docs/local-testing.md`), not of the real dataset | Real brand names are not known until a Google sign-in (plan 03). On the live dataset the brand check leaves these two out and says so; give them real brands to use them |
+| Config | Added `golden.seed_dir` and `golden.glossary_file` | So the seed folder can be moved |
+
+What stays design-only: the Cloud Storage bucket, Eventarc, the production Ingest Job, pgvector and full-text hybrid search, the candidate queue, the nightly re-check and failure mining (plan 11).
+
+## Still to do (needs a Google sign-in or the owner)
+1. `pytest -m live -s tests/test_live_golden.py`: BigQuery accepts the SQL of all 12 seeds, as a brand manager and as the CEO (free dry runs).
+2. `python -m src.cli.main golden validate` with the live config: the same dry runs through the Ingest Job's checks. Expect `g-009` and `g-010` to fail the brand check until they name real brands.
+3. The owner reviews the glossary (Q6) and the seed reports.
+4. With a Gemini key: ask a question close to a seed and read `/trace` for the `golden.retrieve` span.
 
 ## Open items and defaults used
 | Item | Default used | Who answers |

@@ -25,6 +25,17 @@ LIVE_HINT = "run `doctor --live` to call Gemini (a call uses a little of the fre
 MODELS_NAME = "Gemini models"
 CALL_NAME = "Gemini call"
 SHOWN_MODELS = 12
+LOCAL_MODELS_NAME = "Local model"
+LOCAL_CALL_NAME = "Local model call"
+LOCAL_FIX = (
+    "Start the model server (in LM Studio: load the model, then start the local server) and check llm.environments.local "
+    "(base_url and model) in config.yaml, then run doctor --live again."
+)
+
+
+def _local(ctx: DoctorContext) -> bool:
+    """True when this run's environment uses a model server on this machine instead of Gemini."""
+    return ctx.settings is not None and ctx.settings.llm_backend.provider == "openai_compatible"
 
 
 def _gateway(ctx: DoctorContext) -> "LLMGateway":
@@ -40,8 +51,8 @@ def _not_ready(ctx: DoctorContext, name: str) -> Check | None:
     if ctx.settings is None:
         return Check(name, "skip", "skipped because the config file did not load")
     if not ctx.live:
-        return Check(name, "skip", LIVE_HINT)
-    if "gateway" not in ctx.shared and ctx.settings.secrets.gemini_api_key is None:
+        return Check(name, "skip", LIVE_HINT.replace("Gemini", "the local model server") if _local(ctx) else LIVE_HINT)
+    if not _local(ctx) and "gateway" not in ctx.shared and ctx.settings.secrets.gemini_api_key is None:
         return Check(name, "skip", "skipped because GEMINI_API_KEY is not set")
     return None
 
@@ -55,33 +66,41 @@ def _why(exc: BaseException) -> str:
 
 
 def check_gemini_models(ctx: DoctorContext) -> Check:
-    not_ready = _not_ready(ctx, MODELS_NAME)
+    name = LOCAL_MODELS_NAME if _local(ctx) else MODELS_NAME
+    not_ready = _not_ready(ctx, name)
     if not_ready is not None:
         return not_ready
     gateway = _gateway(ctx)
     try:
         available = gateway.available_models()
     except Exception as exc:  # noqa: BLE001 - a diagnostic reports a failure, it does not crash
-        log.warning("listing the Gemini models failed: %s", crash_summary(exc))
-        return Check(MODELS_NAME, "fail", f"could not list the models ({_why(exc)})",
-                     "Check GEMINI_API_KEY in .env and your connection, then run doctor --live again.")
+        log.warning("listing the models failed: %s", crash_summary(exc))
+        return Check(name, "fail", f"could not list the models ({_why(exc)})",
+                     LOCAL_FIX if _local(ctx) else "Check GEMINI_API_KEY in .env and your connection, then run doctor --live again.")
     needed = gateway.router.models_in_use()
     missing = [model for model in needed if model not in available]
+    if missing and _local(ctx):
+        ctx.shared["models_missing"] = True
+        shown = ", ".join(sorted(available)[:SHOWN_MODELS])
+        return Check(name, "fail", f"the server does not list: {', '.join(missing)}",
+                     f"Load that model in the server, or set llm.environments.local.model in config.yaml to an ID it lists: {shown or 'none'}.")
     if missing:
         ctx.shared["models_missing"] = True
         offered = sorted(name for name in available if name.startswith("gemini") and "embedding" not in name)
         shown = ", ".join(offered[:SHOWN_MODELS]) + (f", and {len(offered) - SHOWN_MODELS} more" if len(offered) > SHOWN_MODELS else "")
         return Check(MODELS_NAME, "fail", f"not available to this key: {', '.join(missing)}",
                      f"Set llm.models in config.yaml to IDs this key has. Gemini models it lists: {shown or 'none'}.")
-    return Check(MODELS_NAME, "ok", f"all {len(needed)} configured model(s) exist: {', '.join(needed)}")
+    where = f" at {ctx.settings.llm_backend.base_url}" if _local(ctx) else ""
+    return Check(name, "ok", f"all {len(needed)} configured model(s) exist{where}: {', '.join(needed)}")
 
 
 def check_gemini_call(ctx: DoctorContext) -> Check:
-    not_ready = _not_ready(ctx, CALL_NAME)
+    name = LOCAL_CALL_NAME if _local(ctx) else CALL_NAME
+    not_ready = _not_ready(ctx, name)
     if not_ready is not None:
         return not_ready
     if ctx.shared.get("models_missing"):
-        return Check(CALL_NAME, "skip", "skipped because a model ID is missing")
+        return Check(name, "skip", "skipped because a model ID is missing")
     from pydantic import BaseModel
 
     from src.llm.budget import TurnBudget
@@ -101,18 +120,18 @@ def check_gemini_call(ctx: DoctorContext) -> Check:
             contents="ping", schema=Ping, budget=budget,
         )
     except AgentError as exc:
-        return Check(CALL_NAME, "fail", f"{exc.kind.value}: {exc.detail or exc.user_message}",
-                     "Check GEMINI_API_KEY and the free-tier limits in Google AI Studio, then run doctor --live again.")
+        return Check(name, "fail", f"{exc.kind.value}: {exc.detail or exc.user_message}",
+                     LOCAL_FIX if _local(ctx) else "Check GEMINI_API_KEY and the free-tier limits in Google AI Studio, then run doctor --live again.")
     except Exception as exc:  # noqa: BLE001
-        log.error("the Gemini check crashed: %s", crash_summary(exc))
-        return Check(CALL_NAME, "fail", f"the call crashed ({type(exc).__name__})")
+        log.error("the model check crashed: %s", crash_summary(exc))
+        return Check(name, "fail", f"the call crashed ({type(exc).__name__})")
     elapsed_ms = round((time.perf_counter() - started) * 1000)
     detail = (f"{result.model_used} answered with structured JSON in {elapsed_ms} ms "
               f"({result.tokens_in} tokens in, {result.tokens_out} out, {result.attempts} attempt(s))")
     if result.fallback_used:
-        return Check(CALL_NAME, "warn", detail + "; the sibling model answered because the first one failed",
+        return Check(name, "warn", detail + "; the sibling model answered because the first one failed",
                      "Look at the Gemini rate limits in Google AI Studio and raise llm.rate_limits in config.yaml.")
-    return Check(CALL_NAME, "ok", detail)
+    return Check(name, "ok", detail)
 
 
 # In the order they run. `doctor.py` registers them after the BigQuery checks.

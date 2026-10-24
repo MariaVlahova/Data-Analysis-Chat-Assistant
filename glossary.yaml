@@ -1,0 +1,43 @@
+# Business words with one agreed meaning (plan 10). A question that uses a term or one of its aliases (whole words, any case) gets the
+# definition in the prompts of the steps that need it.
+#
+# ALL OF THESE ARE [PROPOSED] and need the owner's review (Q6): they are our reading of common retail terms, not the client's.
+#
+# `locked: true` marks a definition that the code already enforces (src/agent/prompts/locked_rules.py). It stays here so the owner
+# reads every definition in one place; it is not sent to the model a second time. If you change a locked entry, change the code too.
+- term: churn
+  aliases: [churned, churned customers, churn rate]
+  definition: "A customer is churned when they have no order in the last 90 days before the reference date."
+  locked: true
+
+- term: last month
+  definition: "The previous full calendar month in UTC, relative to the reference date."
+  locked: true
+
+- term: revenue
+  aliases: [sales, turnover]
+  definition: "Revenue is the sum of item sale prices, without cancelled or returned items. Say what was counted when the question asks for something else."
+
+- term: active customer
+  aliases: [active customers]
+  definition: "An active customer placed at least one order in the 90 days before the reference date."
+
+- term: average order value
+  aliases: [aov, average basket, basket size]
+  definition: "Average order value is revenue divided by the number of distinct orders, for the same items and the same period."
+
+- term: repeat customer
+  aliases: [repeat customers, repeat buyers, returning customer, returning customers]
+  definition: "A repeat customer placed two or more orders in the period shown."
+
+- term: top customers
+  aliases: [best customers, biggest spenders, top spenders, top buyers]
+  definition: "Top customers are the customers with the highest total spend on the user's brands in the period, shown as a ranked list of customer labels with their spend. Never names or demographics."
+
+- term: underspending
+  aliases: [underspend, underspends, spends less, spend less, lower spend]
+  definition: "Underspending means spend per customer below the comparison group's average. The answer states that this is the reading used."
+
+- term: return rate
+  aliases: [return rates, returned items, returns]
+  definition: "Return rate is returned items divided by items that were not cancelled. Items not yet delivered cannot have been returned, so the most recent weeks look better than they are."

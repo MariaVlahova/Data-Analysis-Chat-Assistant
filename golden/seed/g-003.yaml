@@ -1,0 +1,25 @@
+id: g-003
+version: 1
+status: approved
+question: "Which product categories drive the most revenue?"
+interpretation_notes: "Revenue means the sum of item sale price, excluding cancelled and returned items. Categories come from products.category."
+sql: |
+  SELECT p.category,
+         SUM(oi.sale_price) AS revenue,
+         COUNT(*) AS items_sold
+  FROM order_items oi
+  JOIN products p ON oi.product_id = p.id
+  WHERE oi.status NOT IN ('Cancelled', 'Returned')
+  GROUP BY p.category
+  ORDER BY revenue DESC
+  LIMIT 10
+report: |
+  A small number of categories bring in most of the revenue. The leading categories are the ones to protect, and the long tail is
+  where growth would have to come from.
+
+  Compare revenue with units sold: a category that earns a lot from few items is a price story, and one that earns a lot from many
+  items is a volume story. Say which kind each leader is.
+tables: [order_items, products]
+brands: ["*"]
+reviewed_by: seed-author
+created_at: 2026-10-24

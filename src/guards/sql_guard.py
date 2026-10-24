@@ -12,7 +12,7 @@ Steps, in order. The first failure stops the check:
  4  only the four tables of the configured dataset          TABLE_NOT_ALLOWED, WILDCARD_TABLE
  5  no blocked column name anywhere                         PII_COLUMN
  6  every column resolves, and its lineage is known         SQL_UNKNOWN_COLUMN (repairable)
- 7  customer-row and demographic rules R1 to R5             PER_CUSTOMER_ROWS, DEMOGRAPHIC_ROW_LEVEL
+ 7  customer-row and demographic rules R1 to R6             PER_CUSTOMER_ROWS, DEMOGRAPHIC_ROW_LEVEL
  8  scope rewrite (brand filter, allowed columns only)      SCOPE_REWRITE_INCOMPLETE
  9  distinct-customer count for the Result Guard, LIMIT
 10  SQL text from the tree, read back and checked again
@@ -532,6 +532,8 @@ class SQLGuard:
 
     def _apply_rules(self, found: Analysis) -> tuple[bool, bool]:
         """Returns (per_customer, demographic)."""
+        if found.id_pinned:  # R6: one customer looked up by ID value, so no group size or ranked-list rule would apply
+            raise violation("PER_CUSTOMER_ROWS", "a customer ID is compared with a fixed value")
         if found.id_outputs:
             if not self._guards.allow_ranked_customer_lists:  # every ID output; and the usual text would offer a ranked list
                 raise violation("PER_CUSTOMER_ROWS", "ranked customer lists are switched off", text=NO_RANKED_LISTS_TEXT)

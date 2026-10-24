@@ -27,7 +27,7 @@ def test_defaults_load_from_an_empty_file(tmp_path):
     assert settings.bigquery.dataset == "bigquery-public-data.thelook_ecommerce"
     assert settings.bigquery.max_bytes_billed == 536_870_912
     assert settings.budget.simple.calls == 8 and settings.budget.report.seconds == 90
-    assert settings.persona.enabled is False
+    assert settings.persona.enabled is True
 
 
 def test_shipped_config_yaml_matches_the_defaults_in_code():

@@ -6,7 +6,7 @@ its sibling. Production would put Vertex AI Gemini after the sibling; the chain 
 """
 from __future__ import annotations
 
-from src.config import LlmConfig, StepSettings
+from src.config import LlmBackend, LlmConfig, StepSettings
 from src.llm_steps import Step
 
 __all__ = ["Router", "Step"]
@@ -31,8 +31,14 @@ _TIERS: dict[Step, tuple[str, ...]] = {
 
 
 class Router:
-    def __init__(self, llm: LlmConfig) -> None:
+    def __init__(self, llm: LlmConfig, backend: LlmBackend | None = None) -> None:
+        """`backend` is the model service of this run's environment. With an OpenAI-compatible one every tier is its one model, so a chain
+        has one entry: there is no sibling to fall back to, and the Pro steps run on the same model."""
         self._llm = llm
+        self._single = backend.model if backend is not None and backend.provider == "openai_compatible" else None
+
+    def _model(self, tier: str) -> str:
+        return self._single or getattr(self._llm.models, tier)
 
     def chain(self, step: Step) -> tuple[str, ...]:
         """Model IDs to try, in order. With `llm.pro_enabled` off the Pro steps use the Flash chain, so Pro is skipped
@@ -42,7 +48,7 @@ class Router:
             tiers = _MAIN_FIRST
         models: list[str] = []
         for tier in tiers:
-            model = getattr(self._llm.models, tier)
+            model = self._model(tier)
             if model not in models:  # light and main may be set to the same ID
                 models.append(model)
         return tuple(models)

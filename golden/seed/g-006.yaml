@@ -1,0 +1,26 @@
+id: g-006
+version: 1
+status: approved
+question: "Which categories get sent back the most, and is it getting worse?"
+interpretation_notes: "Return rate is returned items divided by items that were not cancelled. Items still being processed or shipped cannot have been returned yet, so the most recent weeks look better than they are. Hide categories with very few items, because their rates swing."
+sql: |
+  SELECT p.category,
+         COUNT(*) AS items_sold,
+         COUNTIF(oi.status = 'Returned') AS returned_units,
+         SAFE_DIVIDE(COUNTIF(oi.status = 'Returned'), COUNT(*)) AS return_rate
+  FROM order_items oi
+  JOIN products p ON oi.product_id = p.id
+  WHERE oi.status != 'Cancelled'
+  GROUP BY p.category
+  HAVING COUNT(*) >= 30
+  ORDER BY return_rate DESC
+report: |
+  Returns are concentrated in a few categories, and those are the ones to look at first. A high rate on a small category matters
+  less than a moderate rate on a large one, so show the volume next to the rate.
+
+  Say whether the rate is rising or falling over time, and remind the reader that the newest weeks are incomplete because items
+  that have not arrived yet cannot be returned. Suggest a check of the products behind the worst category.
+tables: [order_items, products]
+brands: ["*"]
+reviewed_by: seed-author
+created_at: 2026-10-24

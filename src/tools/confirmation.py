@@ -26,6 +26,12 @@ class Confirmation:
     prompt: str
 
 
+def id_hash_key(salt: str) -> bytes:
+    """The key of `id_set_hash` for an installation, from its salt (`resolve_salt`): the chat and the sample-data seeder derive the
+    same one, so a hash written by either matches."""
+    return hashlib.sha256(("id-set|" + salt).encode("utf-8")).digest()
+
+
 def id_set_hash(refs: Sequence[str], key: bytes) -> str:
     """The keyed hash of the exact set of IDs. Order does not matter; one more or one fewer ID changes it.
 

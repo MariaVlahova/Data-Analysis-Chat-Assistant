@@ -137,7 +137,8 @@ def make_planner(deps: Deps):
             allowed_tables=sorted(deps.allowlist.table_names()), today=context.get("today", ""),
             dataset_latest=context.get("dataset_latest", ""), hints=context.get("date_hints", {}), max_subquestions=limit,
             definitions=context.get("glossary_terms", []),
-            golden_notes=[e.get("notes", "") for e in context.get("trio_examples", []) if e.get("notes")], replan=replan,
+            golden_notes=[f"{e.get('question', '')} {e['notes']}".strip() for e in context.get("trio_examples", []) if e.get("notes")],  # question and notes only
+            replan=replan,
         )
         try:
             result = deps.gateway.generate(

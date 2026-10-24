@@ -1,0 +1,22 @@
+id: smoke-revenue-by-brand
+title: A brand manager asks for revenue and gets the right figures for their own brands
+description: >
+  The simplest end-to-end question. The model plans nothing: it writes one query, the guard scopes it to the user's brands, the answer states
+  the figures. The right figure of each of the user's brands is computed from the data directly; the answer must state each one. It runs on the
+  sample data and on BigQuery alike, for whichever brands users.local.yaml or users.yaml gives the user.
+user: alice
+tags: [smoke, scope]
+turns:
+  - say: >
+      What was the revenue of each of my brands in 2025? Count revenue as the sale price of items that were not cancelled or returned.
+    expect:
+      outcome: [answered, partial]
+      contains: ["your brands: {brands_text}"]
+      numbers:
+        - label: revenue 2025
+          each_brand: true
+          sql: |
+            SELECT SUM(oi.sale_price) FROM order_items oi JOIN products p ON p.id = oi.product_id
+            WHERE p.brand = {brand} AND oi.status NOT IN ('Cancelled', 'Returned') AND EXTRACT(YEAR FROM oi.created_at) = 2025
+      trace:
+        queries_min: 1

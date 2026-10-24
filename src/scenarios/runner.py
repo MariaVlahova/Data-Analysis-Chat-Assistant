@@ -1,0 +1,267 @@
+"""Run scenarios against the real app (`scenario run`).
+
+Each scenario gets its own data folder under the run's output folder (its own database, traces, logs and saved reports), so scenarios do not
+see each other and a rerun starts clean. The session is the one `chat` starts (`open_session`), with the settings of the run, so what is
+tested is the program a user gets: the same startup checks, guards, graph, tools and traces. The model is the one the environment names.
+
+For each turn the runner collects the evidence (what the user saw, the trace, the metrics row, every prompt) and `checks.py` judges it.
+A scenario fails when any invariant or `expect:` check fails; `advisory:` checks only warn.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import shutil
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable
+
+from rich.console import Console
+
+from src.cli.main import ChaosLevel, open_session
+from src.access.users import load_users
+from src.cli.render import Renderer
+from src.cli.commands import UNNUMBERED_TURN, ChatSession
+from src.config import Settings
+from src.errors import AgentError, ConfigError, ErrorKind, crash_summary, friendly, new_trace_id
+from src.guards.allowlist import load_allowlist
+from src.logging_setup import shutdown_logging
+from src.scenarios import checks as C
+from src.scenarios.checks import Check, Facts, TurnEvidence
+from src.scenarios.recording import RecordingGateway
+from src.scenarios.schema import Scenario
+from src.scenarios.truth import Canaries, Truth
+
+log = logging.getLogger(__name__)
+Say = Callable[[str], None]
+
+
+@dataclass
+class TurnRecord:
+    index: int
+    say: str
+    outcome: str
+    text: str
+    trace_id: str
+    seconds: float
+    checks: list[Check] = field(default_factory=list)
+
+
+@dataclass
+class ScenarioResult:
+    id: str
+    title: str
+    user: str
+    status: str  # pass | fail | skip
+    skip_reason: str = ""
+    turns: list[TurnRecord] = field(default_factory=list)
+    checks: list[Check] = field(default_factory=list)  # about the scenario as a whole
+    seconds: float = 0.0
+    folder: str = ""
+
+    def all_checks(self) -> list[Check]:
+        return [*(check for turn in self.turns for check in turn.checks), *self.checks]
+
+    def count(self, status: str) -> int:
+        return sum(1 for check in self.all_checks() if check.status == status)
+
+
+@dataclass
+class RunReport:
+    run_id: str
+    environment: str
+    model: str
+    data: str  # "sample data" or "BigQuery"
+    folder: str
+    scenarios: list[ScenarioResult] = field(default_factory=list)
+    seconds: float = 0.0
+
+    @property
+    def failed(self) -> bool:
+        return any(result.status == "fail" for result in self.scenarios)
+
+
+def unmet_requirement(scenario: Scenario, settings: Settings) -> str:
+    """Why a scenario cannot run with these settings, or ''."""
+    if "sample_data" in scenario.requires and settings.bigquery.backend != "local":
+        return "needs the sample data (bigquery.backend: local); this run reads BigQuery"
+    if "golden" in scenario.requires and not settings.golden.enabled:
+        return "needs the Golden Bucket (golden.enabled: true)"
+    return ""
+
+
+def quiet_renderer() -> Renderer:
+    return Renderer(Console(quiet=True), Console(quiet=True, stderr=True))
+
+
+class ScenarioRunner:
+    def __init__(self, settings: Settings, out_dir: Path, *, say: Say = lambda text: None) -> None:
+        self._settings = settings
+        self._out = out_dir
+        self._say = say
+        # The right answers come from the data itself, whichever data it is: BigQuery, or the sample data through the local stand-in. Raises
+        # ConfigError when it cannot be read, as the chat would not start either.
+        users = load_users(settings)
+        self._truth: Truth = Truth.from_settings(settings, other_users_brands=[b for name in users.names for b in users.get(name).brands])
+        # Only the sample data has a list of customers' details to look for; against BigQuery the pattern scan alone looks for personal data.
+        self._canaries: Canaries | None = Canaries(settings.resolve(settings.bigquery.local_db)) if settings.bigquery.backend == "local" else None
+
+    def close(self) -> None:
+        self._truth.close()
+
+    # a run -----------------------------------------------------------------------------------------
+
+    def run(self, scenarios: list[Scenario], run_id: str) -> RunReport:
+        backend = self._settings.llm_backend
+        report = RunReport(
+            run_id, self._settings.app.environment, backend.model or "gemini models of llm.models",
+            "sample data" if self._settings.bigquery.backend == "local" else "BigQuery", str(self._out),
+        )
+        started = time.perf_counter()
+        for number, scenario in enumerate(scenarios, 1):
+            self._say(f"[{number}/{len(scenarios)}] {scenario.id}: {scenario.title} (as {scenario.user})")
+            result = self.run_scenario(scenario)
+            report.scenarios.append(result)
+            self._say(f"    {result.status.upper()}" + (f" ({result.skip_reason})" if result.skip_reason else
+                      f" in {result.seconds:.0f} s: {result.count('pass')} passed, {result.count('fail')} failed, {result.count('warn')} warning(s)"))
+        report.seconds = time.perf_counter() - started
+        return report
+
+    def run_scenario(self, scenario: Scenario) -> ScenarioResult:
+        why = unmet_requirement(scenario, self._settings)
+        if why:
+            return ScenarioResult(scenario.id, scenario.title, scenario.user, "skip", skip_reason=why)
+        folder = self._out / scenario.id
+        folder.mkdir(parents=True, exist_ok=True)
+        # The schema and brand list were read once when the run began. Each scenario starts with that copy, so it does not read them from the
+        # data again: against BigQuery that would be two small queries and four metadata calls per scenario.
+        shared = self._settings.data_path / "cache"
+        if shared.is_dir():
+            shutil.copytree(shared, folder / "cache", dirs_exist_ok=True)
+        settings = self._settings.model_copy(update={"app": self._settings.app.model_copy(update={"data_dir": str(folder)})})
+        result = ScenarioResult(scenario.id, scenario.title, scenario.user, "pass", folder=str(folder))
+        started = time.perf_counter()
+        try:
+            self._execute(scenario, settings, result)
+        except ConfigError as exc:  # the chat would not have started either
+            result.checks.append(Check("start the chat", C.FAIL, exc.message + (f" Fix: {exc.fix}" if exc.fix else "")))
+        except Exception as exc:  # noqa: BLE001 - one broken scenario must not stop the rest
+            log.error("scenario %s crashed: %s", scenario.id, crash_summary(exc))
+            result.checks.append(Check("run the scenario", C.FAIL, f"the runner crashed ({type(exc).__name__}); see the log"))
+        finally:
+            shutdown_logging()
+        result.seconds = time.perf_counter() - started
+        result.status = "fail" if result.count(C.FAIL) else "pass"
+        return result
+
+    # one scenario ----------------------------------------------------------------------------------
+
+    def _execute(self, scenario: Scenario, settings: Settings, result: ScenarioResult) -> None:
+        if "seed_reports" in scenario.setup:
+            from src.localdata.reports import seed_saved_reports
+
+            seed_saved_reports(settings)
+        recorders: list[RecordingGateway] = []
+
+        def record(gateway):
+            recorders.append(RecordingGateway(gateway))
+            return recorders[-1]
+
+        chaos = ChaosLevel(scenario.chaos.level) if scenario.chaos else None
+        session = open_session(
+            quiet_renderer(), scenario.user, None, debug=False, chaos=chaos, chaos_seed=scenario.chaos.seed if scenario.chaos else None,
+            conversation=None, settings=settings, gateway_wrapper=record,
+        )
+        try:
+            facts = self._facts(settings, session)
+            evidence: list[TurnEvidence] = []
+            for index, turn in enumerate(scenario.turns, 1):
+                say = self._truth.expand_text(turn.say, session.user.brands)  # "{other_brand}" is a name from this data
+                allowed = [self._truth.expand_text(name, session.user.brands) for name in [*turn.expect.allow_mentions, *turn.advisory.allow_mentions]]
+                self._say(f"    turn {index}/{len(scenario.turns)}: {say}")
+                ev = self._ask(session, recorders[0], say, index)
+                evidence.append(ev)
+                record_ = TurnRecord(index, say, ev.outcome, ev.text, ev.trace_id, ev.seconds)
+                record_.checks = [
+                    *C.invariants(ev, facts, list(dict.fromkeys(allowed))),
+                    *C.expectations(turn.expect, ev, facts),
+                    *C.expectations(turn.advisory, ev, facts, advisory=True),
+                ]
+                result.turns.append(record_)
+                failed = [check for check in record_.checks if check.status == C.FAIL]
+                self._say(f"      {ev.outcome} in {ev.seconds:.0f} s" + (f"; FAILED: {', '.join(check.name for check in failed)}" if failed else ""))
+            result.checks.append(C.confirmation_invariant(evidence))
+        finally:
+            session.close()
+        result.checks.append(self._files_check(Path(result.folder)))
+
+    def _facts(self, settings: Settings, session: ChatSession) -> Facts:
+        from src.reports.store import ReportStore
+
+        allowlist = load_allowlist(settings)
+        blocked = tuple(sorted({column for table in allowlist.table_names() for column in allowlist.blocked(table)}))
+        store = ReportStore.from_settings(settings, hash_ids=lambda ids: "scenario")
+        return Facts(
+            settings, session.user, blocked, self._truth, self._canaries,
+            saved_reports=lambda: len(store.list_reports(session.user.user_id)),
+        )
+
+    def _ask(self, session: ChatSession, recorder: RecordingGateway, say: str, index: int) -> TurnEvidence:
+        """One typed line, through the agent, inside a trace, as `handle_line` does it. Nothing is printed."""
+        trace_id = new_trace_id()
+        first_call = len(recorder.calls)
+        started = time.perf_counter()
+        outcome, text, error_kind, turn = "crashed", "", None, None
+        try:
+            with session.tracer.start_turn(
+                session.user.user_hash, session.conversation_id, UNNUMBERED_TURN, trace_id=trace_id, question=say, chaos=bool(session.chaos),
+            ) as turn:
+                session.turn_count = session.db.next_turn(session.conversation_id)
+                turn.set_turn_id(session.turn_id)
+                answer = session.agent.run(
+                    text=say, conversation_id=session.conversation_id, turn_id=session.turn_id, trace_id=turn.trace_id,
+                    user_hash=session.user.user_hash,
+                )
+                outcome = "awaiting_confirmation" if answer.awaiting_confirmation else (answer.outcome or "answered")
+                text = friendly(answer.error, turn.trace_id) if answer.error is not None else answer.text
+                error_kind = answer.error.kind.value if answer.error is not None else None
+        except Exception as exc:  # noqa: BLE001 - what the CLI's boundary would catch; the evidence says it happened
+            error = AgentError.from_exception(exc, trace_id)
+            outcome = "failed" if isinstance(exc, AgentError) and error.kind is not ErrorKind.INTERNAL else "crashed"
+            text, error_kind = friendly(error, trace_id), error.kind.value
+        row = dict(turn.row) if turn is not None else {}
+        seconds = time.perf_counter() - started
+        spans, trace_text = self._read_trace(session, trace_id)
+        return TurnEvidence(
+            index, say, outcome, text, error_kind, trace_id, seconds, spans, row,
+            [call.text for call in recorder.calls[first_call:]], trace_text,
+        )
+
+    @staticmethod
+    def _read_trace(session: ChatSession, trace_id: str) -> tuple[list[dict], str]:
+        try:
+            raw = session.tracer.trace_path(trace_id).read_text(encoding="utf-8")
+        except OSError:
+            return [], ""
+        spans = []
+        for line in raw.split("\n"):
+            try:
+                spans.append(json.loads(line))
+            except ValueError:
+                continue
+        return spans, raw
+
+    def _files_check(self, folder: Path) -> Check:
+        """After the scenario: no customer detail in any file the app wrote (logs, traces, metrics, the database and its checkpoints)."""
+        if self._canaries is None:
+            return Check("I1 no personal data in the files", C.SKIP, "no sample data to know the customers' details")
+        problems: list[str] = []
+        count = 0
+        for path in sorted(folder.rglob("*")):
+            if not path.is_file() or path.suffix == ".duckdb":
+                continue
+            count += 1
+            kinds = self._canaries.find(path.read_bytes().decode("latin-1"))
+            problems += [f"{kind} in {path.relative_to(folder).as_posix()}" for kind in kinds]
+        return Check("I1 no personal data in the files", C.FAIL if problems else C.PASS, "; ".join(problems) or f"{count} file(s) read")

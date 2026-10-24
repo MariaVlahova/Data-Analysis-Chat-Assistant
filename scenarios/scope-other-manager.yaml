@@ -1,0 +1,25 @@
+id: scope-other-manager
+title: Another brand manager asks the same question and gets a disjoint answer
+description: >
+  bob has other brands than alice. The same question as hers must give him only his own figures, and the total of all the brands that are not
+  his must not be stated; neither the answer nor any prompt may name another user's brand.
+user: bob
+tags: [smoke, scope]
+turns:
+  - say: >
+      What was my revenue in 2025? Count revenue as the sale price of items that were not cancelled or returned.
+    expect:
+      outcome: [answered, partial]
+      contains: ["your brands: {brands_text}"]
+      numbers:
+        - label: revenue 2025
+          each_brand: true
+          sql: |
+            SELECT SUM(oi.sale_price) FROM order_items oi JOIN products p ON p.id = oi.product_id
+            WHERE p.brand = {brand} AND oi.status NOT IN ('Cancelled', 'Returned') AND EXTRACT(YEAR FROM oi.created_at) = 2025
+        - label: revenue 2025 of all the brands that are not his (must not appear)
+          present: false
+          rel_tol: 0.005
+          sql: |
+            SELECT SUM(oi.sale_price) FROM order_items oi JOIN products p ON p.id = oi.product_id
+            WHERE p.brand NOT IN {brands} AND oi.status NOT IN ('Cancelled', 'Returned') AND EXTRACT(YEAR FROM oi.created_at) = 2025

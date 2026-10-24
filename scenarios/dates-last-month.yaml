@@ -1,0 +1,20 @@
+id: dates-last-month
+title: '"Last month" is read against the data''s last day and the answer says which month'
+description: >
+  "Last month" is the month before the reference date, which is the data's last day when that is earlier than today. Code resolves it into the
+  date hints; the answer should say how it read the words, and the figure is computed for that month.
+user: alice
+tags: [dates]
+turns:
+  - say: >
+      What was the revenue of my brands last month? Count revenue as the sale price of items that were not cancelled or returned.
+    expect:
+      outcome: [answered, partial]
+      numbers:
+        - label: revenue of my brands in the month before the reference date
+          sql: |
+            SELECT SUM(oi.sale_price) FROM order_items oi JOIN products p ON p.id = oi.product_id
+            WHERE p.brand IN {brands} AND oi.status NOT IN ('Cancelled', 'Returned')
+              AND DATE(oi.created_at) >= DATE '{last_month_start}' AND DATE(oi.created_at) < DATE '{this_month_start}'
+    advisory:
+      contains_any: ["{last_month}", "{last_month_start}"]

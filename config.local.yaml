@@ -1,0 +1,40 @@
+# Run the whole app on this machine: generated sample data instead of BigQuery, and a model served locally instead of Gemini.
+# No Google Cloud sign-in, no Gemini key, no cost.
+#
+#   python -m src.cli.main local-data build           --config config.local.yaml
+#   python -m src.cli.main local-data seed-reports    --config config.local.yaml
+#   python -m src.cli.main chat --user alice          --config config.local.yaml
+#   python -m src.cli.main scenario run               --config config.local.yaml     # the scripted test scenarios (docs/local-testing.md)
+#
+# Or set OPSFLEET_CONFIG=config.local.yaml once. Everything not listed here keeps the default of config.yaml.
+# The sample data is a development aid: it does not replace the live checks of plans 03 and 05 (docs/local-testing.md).
+
+app:
+  environment: local                 # llm.environments.local: qwen/qwen3-30b-a3b-2507 on this machine, through an OpenAI-compatible server
+                                     # (LM Studio's default, http://localhost:1234/v1). prod, staging, develop and default use Gemini.
+                                     # To run the sample data with Gemini: OPSFLEET_ENV=default (it overrides this line).
+  data_dir: data/local               # its own database, traces, logs and schema cache, apart from a live run
+  users_file: users.local.yaml       # the brands below exist in the sample data, not in thelook_ecommerce
+
+bigquery:
+  backend: local
+  local_db: data/local/thelook.duckdb
+  # dataset stays bigquery-public-data.thelook_ecommerce: the guard writes that name into every query, and the local
+  # client reads it the way BigQuery would.
+
+guards:
+  # schema_allowlist.yaml is marked reviewed_against_live: false because nobody has compared it with the real dataset yet.
+  # The sample data was built from the same column list, so it cannot say anything about the live schema. Start with a warning.
+  require_reviewed_allowlist: false
+
+golden:
+  enabled: true                      # plan 10: similar solved questions and the glossary
+
+# A 30B model on a laptop writes about 10 tokens a second, so a turn takes minutes where Gemini takes seconds. The limits below are
+# for that speed; they are the only reason these differ from config.yaml. The number of calls per turn is unchanged.
+llm:
+  request_timeout_s: 300             # one attempt
+budget:
+  simple: {calls: 8, seconds: 480}
+  why: {calls: 20, seconds: 1200}
+  report: {calls: 20, seconds: 1200}

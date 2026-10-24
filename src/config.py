@@ -7,9 +7,10 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
+from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator, model_validator
 
 from src.errors import ConfigError
 from src.llm_steps import LLM_STEP_NAMES, STEP_DEFAULTS
@@ -17,6 +18,13 @@ from src.yaml_utils import load_yaml, validation_message
 
 DEFAULT_CONFIG_NAME = "config.yaml"
 CONFIG_ENV_VAR = "OPSFLEET_CONFIG"
+ENVIRONMENT_ENV_VAR = "OPSFLEET_ENV"  # overrides app.environment, so one config file serves every environment
+
+# The environments a run can name. Each one says which model service answers (`llm.environments`): Gemini everywhere but `local`, which is a
+# model on this machine, behind an OpenAI-compatible server such as LM Studio.
+ENVIRONMENTS = ("default", "develop", "staging", "prod", "local")
+Environment = Literal["default", "develop", "staging", "prod", "local"]
+LOCAL_MODEL = "qwen/qwen3-30b-a3b-2507"
 
 
 class _Section(BaseModel):
@@ -29,11 +37,18 @@ class AppConfig(_Section):
     timezone: str = "UTC"  # A17
     data_dir: str = "data"
     user_hash_salt: str | None = None  # None: a generated file in data_dir (impl)
+    users_file: str = "users.yaml"  # next to config.yaml; `config.local.yaml` points at `users.local.yaml` (impl)
+    environment: Environment = "default"  # picks the model service in `llm.environments`; OPSFLEET_ENV overrides it (impl)
 
 
 class BigQueryConfig(_Section):
     project_id: str | None = None  # None: GOOGLE_CLOUD_PROJECT or default credentials
     dataset: str = "bigquery-public-data.thelook_ecommerce"
+    # "local" runs the same queries on a DuckDB file of generated sample data (`local-data build`), with no Google sign-in. Every
+    # guard and the SafeQueryRunner still run; only the engine behind the client changes. For development and demos, never a
+    # stand-in for the live checks of plans 03 and 05 (impl).
+    backend: Literal["bigquery", "local"] = "bigquery"
+    local_db: str = "data/local/thelook.duckdb"  # used only with backend: local
     max_bytes_billed: int = Field(536_870_912, gt=0)  # 512 MiB per query [OPEN] NFR6, Q3
     query_timeout_s: float = Field(30, gt=0)  # [OPEN] Q3
     sql_row_limit: int = Field(1000, ge=1)  # the forced LIMIT
@@ -142,6 +157,31 @@ def _default_steps() -> dict[str, StepSettings]:
     }
 
 
+class LlmBackend(_Section):
+    """The model service behind one environment: Gemini (the SDK, with `llm.models` and `llm.rate_limits`), or any server that speaks the
+    OpenAI chat-completions protocol (LM Studio, Ollama, vLLM). With the second, `model` answers every step: there are no tiers and no
+    sibling to fall back to, and the Gemini rate limits do not apply (a local server has none; `rpm` only bounds a burst)."""
+
+    provider: Literal["gemini", "openai_compatible"] = "gemini"
+    base_url: str = "http://localhost:1234/v1"  # openai_compatible only; LM Studio's default
+    model: str | None = None  # openai_compatible only: the model ID the server lists
+    api_key_env: str | None = None  # openai_compatible only: the NAME of an environment variable that holds a key, if the server wants one
+    rpm: int = Field(600, gt=0)  # openai_compatible only
+
+    @model_validator(mode="after")
+    def _a_compatible_server_needs_a_model(self) -> "LlmBackend":
+        if self.provider == "openai_compatible" and not (self.model or "").strip():
+            raise ValueError("an openai_compatible backend needs `model`, the model ID the server lists")
+        return self
+
+
+def _default_environments() -> dict[str, LlmBackend]:
+    return {
+        **{name: LlmBackend() for name in ENVIRONMENTS if name != "local"},
+        "local": LlmBackend(provider="openai_compatible", model=LOCAL_MODEL),
+    }
+
+
 class LlmConfig(_Section):
     """Plan 04 owns these keys and may add more."""
 
@@ -153,7 +193,24 @@ class LlmConfig(_Section):
     breaker: LlmBreaker = LlmBreaker()
     request_timeout_s: float = Field(30.0, gt=0)  # one attempt; the turn's remaining time wins if it is less (impl)
     steps: dict[str, StepSettings] = Field(default_factory=_default_steps)  # a step you leave out keeps its default
+    environments: dict[str, LlmBackend] = Field(default_factory=_default_environments)  # an environment you leave out keeps its default
     pricing_usd_per_1m: dict[str, ModelPrice] | None = None  # plan 02: null until filled, we never invent prices
+
+    @field_validator("environments", mode="before")
+    @classmethod
+    def _fill_in_environment_defaults(cls, given: object) -> object:
+        """Like the steps: an environment you leave out keeps its backend, and a setting you leave out of one you list keeps its default."""
+        if not isinstance(given, dict):
+            return given
+        unknown = sorted(str(name) for name in set(given) - set(ENVIRONMENTS))
+        if unknown:
+            raise ValueError(f"unknown environment(s) {', '.join(unknown)}; the environments are {', '.join(ENVIRONMENTS)}")
+        merged: dict[str, object] = {name: backend.model_dump() for name, backend in _default_environments().items()}
+        for name, value in given.items():
+            if isinstance(value, LlmBackend):
+                value = value.model_dump(exclude_unset=True)
+            merged[name] = {**merged[name], **value} if isinstance(value, dict) else value
+        return merged
 
     @field_validator("steps", mode="before")
     @classmethod
@@ -192,11 +249,13 @@ class ObservabilityConfig(_Section):
 class GoldenConfig(_Section):
     enabled: bool = False
     top_k: int = Field(3, ge=1)
-    min_similarity: float = Field(0.25, ge=0, le=1)
+    min_similarity: float = Field(0.15, ge=0, le=1)  # chosen on the seed set, see tests/test_golden_index.py
+    seed_dir: str = "golden/seed"  # one trio per YAML file (plan 10)
+    glossary_file: str = "glossary.yaml"
 
 
 class PersonaConfig(_Section):
-    enabled: bool = False
+    enabled: bool = True  # decision 3.9: the one static persona reaches the Composer every turn
     default: str = "default"
 
 
@@ -240,6 +299,11 @@ class Settings(_Section):
     secrets: Secrets = Field(default_factory=Secrets, repr=False, exclude=True)
     base_dir: Path = Field(default=Path("."), repr=False)  # relative paths resolve against this
     config_path: Path | None = Field(default=None, repr=False)
+
+    @property
+    def llm_backend(self) -> LlmBackend:
+        """The model service of this run's environment (`app.environment`, or OPSFLEET_ENV)."""
+        return self.llm.environments[self.app.environment]
 
     def resolve(self, relative: str | Path) -> Path:
         path = Path(relative)
@@ -313,6 +377,15 @@ def load_settings(config_path: str | Path | None = None, *, load_env_file: bool 
             hint = "Put secrets in .env or the environment, never in YAML." if reserved == "secrets" else ""
             raise ConfigError(f"{path.name}: '{reserved}' is not a config key. {hint}".strip())
 
+    override = os.environ.get(ENVIRONMENT_ENV_VAR, "").strip()
+    if override:
+        if override not in ENVIRONMENTS:
+            raise ConfigError(
+                f"{ENVIRONMENT_ENV_VAR} is '{override}', which is not an environment.",
+                fix=f"Use one of: {', '.join(ENVIRONMENTS)}, or unset {ENVIRONMENT_ENV_VAR}.",
+            )
+        if data.get("app") is None or isinstance(data.get("app"), dict):
+            data = {**data, "app": {**(data.get("app") or {}), "environment": override}}
     try:
         return Settings.model_validate(
             {**data, "secrets": Secrets.from_env(), "base_dir": path.resolve().parent, "config_path": path}

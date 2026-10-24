@@ -1,0 +1,25 @@
+id: g-001
+version: 1
+status: approved
+question: "How did sales move from month to month over the past twelve months?"
+interpretation_notes: "Sales means revenue: the sum of item sale prices, without cancelled or returned items. Months are calendar months in UTC. The period is the twelve full months before the reference date; the dates in the SQL are only an example."
+sql: |
+  SELECT DATE_TRUNC(DATE(oi.created_at), MONTH) AS month,
+         SUM(oi.sale_price) AS revenue,
+         COUNT(*) AS items_sold
+  FROM order_items oi
+  WHERE oi.status NOT IN ('Cancelled', 'Returned')
+    AND oi.created_at >= TIMESTAMP '2025-10-01'
+    AND oi.created_at < TIMESTAMP '2026-10-01'
+  GROUP BY month
+  ORDER BY month
+report: |
+  Sales grew over the period, with a steady climb through the year and the strongest months at the end. The shape follows the
+  usual retail season: a soft start, a flat middle and a clear lift in the last months.
+
+  The month-to-month changes are small in the middle of the year and larger around the holidays, so the end of the series should
+  not be read as a new normal. Say which months are the peak and which are the low points, and name the period in the first line.
+tables: [order_items]
+brands: ["*"]
+reviewed_by: seed-author
+created_at: 2026-10-24

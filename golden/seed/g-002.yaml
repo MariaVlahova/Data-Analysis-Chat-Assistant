@@ -1,0 +1,24 @@
+id: g-002
+version: 1
+status: approved
+question: "Which customers have spent the most with us? Rank the top ones."
+interpretation_notes: "A ranked list of customers shows the customer ID and the spend only, never names, contact details or demographics. Spend is the sum of item sale prices without cancelled or returned items, on the user's brands only."
+sql: |
+  SELECT oi.user_id AS customer_id,
+         SUM(oi.sale_price) AS total_spend,
+         COUNT(DISTINCT oi.order_id) AS orders
+  FROM order_items oi
+  WHERE oi.status NOT IN ('Cancelled', 'Returned')
+  GROUP BY oi.user_id
+  ORDER BY total_spend DESC
+  LIMIT 20
+report: |
+  The list ranks customers by what they spent on your brands. Customers appear only as labels, so the list says how concentrated
+  the spend is and not who the customers are.
+
+  Point out whether a few customers account for a large share of the spend or whether it is spread out, and say that the ranking
+  covers the selected brands only, not everything the customer bought.
+tables: [order_items]
+brands: ["*"]
+reviewed_by: seed-author
+created_at: 2026-10-24

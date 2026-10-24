@@ -155,8 +155,12 @@ class _Runner:
         if text_hash in attempts["fingerprints"]:
             raise AgentError(ErrorKind.REPEATED_SQL, detail="the same query was written before")
         attempts["fingerprints"].append(text_hash)
+        # The digits of a label are no customer's ID (plan 07). Checked on the model's text first, so the user hears why
+        # rather than the general per-customer refusal (R6), and again on the text that would run.
+        if self.deps.result_guard.references_session_label(sql):
+            raise violation("SESSION_LABEL", "the query uses the number of a customer label")
         gq = self.deps.sql_guard.check(sql, self.user)
-        if self.deps.result_guard.references_session_label(gq.sql):  # the digits of a label are no customer's ID (plan 07)
+        if self.deps.result_guard.references_session_label(gq.sql):
             raise violation("SESSION_LABEL", "the query uses the number of a customer label")
         if gq.fingerprint in attempts["fingerprints"]:  # the same query in another spelling
             raise AgentError(ErrorKind.REPEATED_SQL, detail="the same query was written before")

@@ -1,0 +1,21 @@
+id: delete-confirm-then-undo
+title: A confirmed delete removes the report, and undo brings it back
+description: >
+  The same request, confirmed this time with the exact reply the level asks for. The delete is soft, so "undo" restores it. The count of the
+  user's saved reports after each turn is read from the database, not from what the model said.
+user: alice
+tags: [hitl]
+setup: [seed_reports]
+turns:
+  - say: Delete my reports about returns.
+    expect:
+      outcome: awaiting_confirmation
+      saved_reports: 4
+  - say: "yes"
+    expect:
+      outcome: action_done
+      saved_reports: 3
+  - say: Undo that delete.
+    expect:
+      outcome: action_done
+      saved_reports: 4

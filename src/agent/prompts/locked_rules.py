@@ -92,7 +92,10 @@ def selector_rule(selector_intents: Sequence[tuple[str, str]]) -> str:
     return (
         f"only for {acts_on}, and only when the message names which ones. kind is one of conversation (the items saved in this "
         "conversation), text_match (items that mention some text; put that text in text), all (every item) or last (the most "
-        "recent item). Otherwise null. Never invent IDs or titles."
+        "recent item). When the message names text or a conversation, that kind wins over all, even with the word \"all\": "
+        "\"delete all reports mentioning Client X\" is text_match with text \"Client X\", and \"delete all the reports we made "
+        "in this conversation\" is conversation. all is only for every item with no condition. Otherwise null. Never invent "
+        "IDs or titles."
     )
 
 

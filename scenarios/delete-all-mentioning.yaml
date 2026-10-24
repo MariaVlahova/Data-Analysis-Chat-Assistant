@@ -1,0 +1,19 @@
+id: delete-all-mentioning
+title: '"Delete all reports mentioning X" deletes only the reports that mention X'
+description: >
+  The brief's own wording. The word "all" must not turn the request into "every report": the selector is text_match, so the preview shows the
+  one report about returns, not all four, and asks for the light reply of one report, not `DELETE 4`. "no" cancels and nothing changes.
+user: alice
+tags: [hitl]
+setup: [seed_reports]
+turns:
+  - say: Delete all reports mentioning returns.
+    expect:
+      outcome: awaiting_confirmation
+      contains: ["Returns review for dresses"]
+      not_contains: ["DELETE 4", "Monthly revenue by brand"]
+      saved_reports: 4
+  - say: "no"
+    expect:
+      outcome: action_cancelled
+      saved_reports: 4

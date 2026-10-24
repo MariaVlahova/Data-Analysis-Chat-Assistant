@@ -1,0 +1,20 @@
+id: g-011
+version: 1
+status: draft
+question: "Which marketing channels bring in the customers who spend the most?"
+interpretation_notes: "A channel is the traffic source the customer signed up from. Compare spend per customer, and hide channels with fewer than ten customers."
+sql: |
+  SELECT u.traffic_source,
+         COUNT(DISTINCT u.id) AS customers,
+         SAFE_DIVIDE(SUM(oi.sale_price), COUNT(DISTINCT u.id)) AS spend_per_customer
+  FROM order_items oi
+  JOIN users u ON u.id = oi.user_id
+  WHERE oi.status NOT IN ('Cancelled', 'Returned')
+  GROUP BY u.traffic_source
+  ORDER BY spend_per_customer DESC
+report: |
+  Draft, not yet reviewed by an analyst. Compare the channels on spend per customer and on the number of customers they bring.
+tables: [order_items, users]
+brands: ["*"]
+reviewed_by: seed-author
+created_at: 2026-10-24

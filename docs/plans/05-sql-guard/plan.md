@@ -148,6 +148,7 @@ Definitions: a *customer-ID output* is any output column of the outermost `SELEC
 | R3 | A customer-ID output and a demographic touch in the same query | `PER_CUSTOMER_ROWS` violation (never demographics next to per-customer rows) |
 | R4 | A demographic touch and the outermost select is not aggregated (no `GROUP BY`, no aggregate) | `DEMOGRAPHIC_ROW_LEVEL` violation |
 | R5 | A demographic touch and the outermost select is aggregated | Allowed. `demographic = True`. Inject `COUNT(DISTINCT <customer id>) AS __k_users` into the outermost select when a customer-ID column is directly in its sources, and set `k_column`. If none is reachable (for example the ids were dropped inside a CTE), set `k_column = None`. The Result Guard then withholds the result because group sizes cannot be verified. |
+| R6 | A customer ID is compared with a fixed value in any clause (`= 4242`, `BETWEEN 100 AND 100`, `IN (4242)`, `IN UNNEST([...])`, a CTE of literals, a scalar subquery, `CASE WHEN user_id = ...`). Checked first. | `PER_CUSTOMER_ROWS` violation: a lookup of one customer is a group of one, whatever the output columns are (S7). Joins of two ID columns, `IS NULL` and `IN (SELECT ...)` over a segment are not pins. (impl, added after the 2026-10-25 audit) |
 - `guards.allow_ranked_customer_lists: false` turns R2 off. Then every customer-ID output is a violation.
 - The SQL-writer prompt (plan 07) tells the model to keep demographic grouping in one `SELECT` and to use ranked lists for "top customers". That is guidance only; the rules above are what enforce it.
 
@@ -163,7 +164,7 @@ Definitions: a *customer-ID output* is any output column of the outermost `SELEC
 schema_allowlist.yaml
 src/guards/__init__.py  allowlist.py  sql_guard.py  scope_views.py  refusals.py
 src/guards/query.py     GuardedQuery and ArrayParam: no sqlglot, no BigQuery import (the runner imports it)
-src/guards/lineage.py   column lineage and rules R1 to R5 on the qualified copy
+src/guards/lineage.py   column lineage and rules R1 to R6 on the qualified copy
 tests/guard_support.py  users, settings and the analytic query corpus the tests share
 tests/test_sql_guard.py  test_scope_rewrite.py  test_allowlist.py  test_guarded_query_origin.py
 tests/test_sql_guard_review.py  test_sql_guard_review2.py  test_sql_guard_review3.py  test_guarded_query_seal.py   (regressions from the three code reviews)
@@ -177,7 +178,7 @@ Also changed: `src/data_access/safe_runner.py` (accepts `GuardedQuery`, turns `A
 - [x] `sql_guard.py` steps 0 to 5 and 10, with the rule IDs.
 - [x] Lineage with `qualify` on a copy (step 6). Collect output-column lineage and quasi-identifier touches.
 - [x] `scope_views.py`: templates for `brands` and `all` modes. Scope rewrite using sqlglot scopes. The post-condition check.
-- [x] Customer-row and demographic rules R1 to R5. `__k_users` injection. `LIMIT`.
+- [x] Customer-row and demographic rules R1 to R6. `__k_users` injection. `LIMIT`.
 - [x] `refusals.py`: user-facing text per rule ID.
 - [x] Emit `guard.decision` events (plan 02). Fill `rewrites` for the trace.
 - [x] Verify on the installed sqlglot: names of set-operation classes and the `qualify` options can differ between versions.

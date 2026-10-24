@@ -1,0 +1,27 @@
+id: g-007
+version: 1
+status: approved
+question: "How do spending habits differ between younger and older customers?"
+interpretation_notes: "Group customers into age bands in one SELECT and count the distinct customers in each band; bands with fewer than ten customers are hidden by the privacy rule. Spend is the sum of item sale prices without cancelled or returned items."
+sql: |
+  SELECT CASE WHEN u.age < 25 THEN 'under 25'
+              WHEN u.age < 45 THEN '25 to 44'
+              WHEN u.age < 65 THEN '45 to 64'
+              ELSE '65 and over' END AS age_band,
+         COUNT(DISTINCT u.id) AS customers,
+         SUM(oi.sale_price) AS revenue,
+         SAFE_DIVIDE(SUM(oi.sale_price), COUNT(DISTINCT u.id)) AS spend_per_customer
+  FROM order_items oi
+  JOIN users u ON u.id = oi.user_id
+  WHERE oi.status NOT IN ('Cancelled', 'Returned')
+  GROUP BY age_band
+  ORDER BY spend_per_customer DESC
+report: |
+  The bands differ in size more than in habits: compare spend per customer, not total revenue, or the largest band always wins.
+
+  Say which band spends the most per head and which is the biggest source of revenue, and keep those two apart. Note any band that
+  was left out because it was too small to show.
+tables: [order_items, users]
+brands: ["*"]
+reviewed_by: seed-author
+created_at: 2026-10-24

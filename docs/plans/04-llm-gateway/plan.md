@@ -213,3 +213,16 @@ Things the tests showed, now written down:
 - Plan 03's `SafeQueryRunner` reads `budget.bytes_remaining` (a property) and calls `charge_bytes(n)` and `check_time()`. `TurnBudget` has them (done).
 - Plan 09 uses `fake.py` and the chaos seeds for the resilience tests: `FakeGateway` for graph tests, the real `LLMGateway` over `FakeGenaiClient` plus a seeded `Chaos` for retry, breaker and fallback tests.
 - Plan 11 documents the full production chain including Vertex AI.
+
+## Added later: the local model backend
+Not part of the original plan. The Gemini free tier is rate-limited and a test run should not spend it, so `LLMGateway` can also talk to a model on this machine.
+
+| What | How |
+|---|---|
+| Which service answers | `app.environment` (or `OPSFLEET_ENV`) picks an entry of `llm.environments`. `default`, `develop`, `staging` and `prod` are Gemini; `local` is `openai_compatible` with `model: qwen/qwen3-30b-a3b-2507` at `http://localhost:1234/v1` (LM Studio). |
+| The client | `src/llm/openai_compat.py`: one `chat/completions` request, with the step's pydantic schema as `response_format: json_schema`. The reply comes back in the gateway's terms (text, tokens, finish reason `STOP`, `MAX_TOKENS`). A `<think>` block is dropped. |
+| What stays the same | Routing by step, the turn budget, retries with jitter, the circuit breaker, the one re-ask for unusable JSON (and the bigger cap for a reply cut at the limit), token accounting, chaos, the spans. The error classification is shared: a `CompatHTTPError` is judged by its HTTP code exactly as a Gemini `APIError` is. |
+| What differs | One model answers every step (`Router` maps every tier to it), so there is no sibling fallback and the Pro steps run on the same model. The rate limiter uses the backend's `rpm` (default 600), not the Gemini free-tier limit. `GEMINI_API_KEY` is not needed. `doctor` checks the server with `--live` ("Local model" and "Local model call"). |
+| Time | A 30B model on a laptop writes about 10 tokens a second. `config.local.yaml` raises `llm.request_timeout_s` and the `budget.*.seconds` for it; the call limits are unchanged. |
+| Tests | `tests/test_openai_compat.py` (a mock server on `httpx.MockTransport`). Nothing outside `src/llm/` may mention `chat/completions`. |
+

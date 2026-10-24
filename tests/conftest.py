@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 
 import pytest
 
+from src.data_access import safe_runner as _safe_runner
 from tests.fake_bigquery import FakeClient, FakeRunner, default_client
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+REAL_MAKE_RUNNER = _safe_runner.make_runner  # taken at import, before the autouse fixture below replaces it with the fake
 
 USERS_YAML = """\
 users:
@@ -18,7 +21,7 @@ users:
   nobrands: {name: No Brands, role: brand_manager, brands: []}
 """
 
-SECRET_ENV_VARS = ("GEMINI_API_KEY", "GOOGLE_CLOUD_PROJECT", "GOOGLE_APPLICATION_CREDENTIALS", "OPSFLEET_CONFIG")
+SECRET_ENV_VARS = ("GEMINI_API_KEY", "GOOGLE_CLOUD_PROJECT", "GOOGLE_APPLICATION_CREDENTIALS", "OPSFLEET_CONFIG", "OPSFLEET_ENV")
 
 
 @pytest.fixture(autouse=True)
@@ -44,6 +47,49 @@ def fake_bigquery(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureReques
     return client
 
 
+@pytest.fixture(scope="session")
+def local_db(tmp_path_factory: pytest.TempPathFactory):
+    """The generated sample data (`src/localdata`), built once per test run: a small, fixed copy (2500 customers, data to 2026-10-22).
+    Returns the `BuildSummary`."""
+    from datetime import date
+
+    from src.localdata.generate import BuildOptions, generate
+
+    path = tmp_path_factory.mktemp("localdata") / "thelook.duckdb"
+    return generate(path, BuildOptions(seed=7, users=2500, end=date(2026, 10, 22)))
+
+
+@pytest.fixture
+def local_project(project: Path, local_db, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """`project`, with a config that points at the generated data. The autouse fake BigQuery is undone for this test: the real
+    `make_runner` reads `bigquery.backend: local` and gives the DuckDB stand-in, so the whole path from the config is the one tested."""
+    from src.data_access import safe_runner
+
+    monkeypatch.setattr(safe_runner, "make_runner", REAL_MAKE_RUNNER)
+    (project / "config.yaml").write_text(
+        f'app:\n  language: en\nbigquery:\n  backend: local\n  local_db: "{local_db.path.as_posix()}"\n', encoding="utf-8"
+    )
+    return project
+
+
+@pytest.fixture
+def local_settings(local_project: Path):
+    """The settings of `local_project`: the sample data behind the local stand-in."""
+    from src.config import load_settings
+
+    return load_settings(local_project / "config.yaml", load_env_file=False)
+
+
+@pytest.fixture
+def truth(local_settings):
+    """What the scenarios compute the right answers with, over the sample data."""
+    from src.scenarios.truth import Truth
+
+    handle = Truth.from_settings(local_settings)
+    yield handle
+    handle.close()
+
+
 @pytest.fixture
 def users_yaml() -> str:
     return USERS_YAML
@@ -51,10 +97,12 @@ def users_yaml() -> str:
 
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A temporary project folder with a minimal config.yaml, a users.yaml and the repository's schema_allowlist.yaml.
-    The cwd is moved into it, so no developer .env file is picked up."""
+    """A temporary project folder with a minimal config.yaml, a users.yaml, the repository's schema_allowlist.yaml and its
+    static persona (on by default, decision 3.9). The cwd is moved into it, so no developer .env file is picked up."""
     (tmp_path / "config.yaml").write_text("app:\n  language: en\n", encoding="utf-8")
     (tmp_path / "users.yaml").write_text(USERS_YAML, encoding="utf-8")
+    (tmp_path / "personas").mkdir()
+    shutil.copyfile(REPO_ROOT / "personas" / "default.yaml", tmp_path / "personas" / "default.yaml")
     allowlist = (REPO_ROOT / "schema_allowlist.yaml").read_text(encoding="utf-8")  # plan 05
     flag = re.compile(r"^reviewed_against_live: (true|false)$", re.MULTILINE)
     assert flag.search(allowlist), "schema_allowlist.yaml must carry the reviewed_against_live flag"

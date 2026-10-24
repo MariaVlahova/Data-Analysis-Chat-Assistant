@@ -472,6 +472,35 @@ def test_a_ranked_list_next_to_a_demographic_column_is_refused_r3(guard):
         assert violation_rule(guard, sql) == "PER_CUSTOMER_ROWS", sql
 
 
+def test_a_customer_id_held_to_a_fixed_value_is_refused_r6(guard):
+    """One customer looked up by ID: no ID in the output, so R1 to R3 would not see it, and no group size applies."""
+    for sql in (
+        "SELECT oi.order_id, oi.sale_price, oi.created_at FROM order_items oi WHERE oi.user_id = 4242",
+        "SELECT SUM(sale_price) FROM order_items WHERE user_id = 12345",
+        "SELECT SUM(sale_price) FROM order_items WHERE 4242 = user_id",
+        "SELECT order_id, created_at FROM orders WHERE user_id BETWEEN 100 AND 100",
+        "SELECT SUM(sale_price) FROM order_items WHERE user_id IN (4242, 4243)",
+        "SELECT SUM(sale_price) FROM order_items WHERE user_id IN UNNEST([4242])",
+        "SELECT SUM(sale_price) FROM order_items WHERE CAST(user_id AS STRING) = '4242'",
+        "SELECT SUM(CASE WHEN user_id = 4242 THEN sale_price END) FROM order_items",
+        "SELECT SUM(oi.sale_price) FROM order_items oi JOIN (SELECT 4242 AS x) t ON oi.user_id = t.x",
+        "WITH t AS (SELECT 4242 AS x) SELECT SUM(oi.sale_price) FROM order_items oi JOIN t ON oi.user_id = t.x",
+        "SELECT SUM(sale_price) FROM order_items WHERE user_id = (SELECT MIN(id) FROM users)",
+        "SELECT COUNT(*) FROM users u WHERE u.id = 7",
+    ):
+        assert violation_rule(guard, sql) == "PER_CUSTOMER_ROWS", sql
+
+
+def test_joins_and_segments_on_customer_ids_are_not_pins_r6(guard):
+    for sql in (
+        "SELECT COUNT(DISTINCT o.user_id) FROM orders o JOIN order_items oi ON oi.order_id = o.order_id AND oi.user_id = o.user_id",
+        "SELECT SUM(sale_price) FROM order_items WHERE user_id IN (SELECT user_id FROM orders WHERE status = 'Returned')",
+        "SELECT COUNT(*) FROM orders WHERE user_id IS NOT NULL",
+        RANKED,
+    ):
+        accepted(guard, sql, ALICE)
+
+
 def test_a_demographic_column_without_aggregation_is_refused_r4(guard):
     for sql in (
         "SELECT age FROM users LIMIT 10",

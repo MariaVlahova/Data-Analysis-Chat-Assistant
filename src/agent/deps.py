@@ -83,8 +83,9 @@ class Deps:
     registry: ToolRegistry
     load_user: Callable[[], UserContext]  # reads users.yaml again each turn, so a change of brands applies at once (NFR15)
     persona_text: Callable[[], str] = lambda: ""  # the Composer's persona block, "" when there is none
-    glossary: Callable[[str], list[str]] = lambda question: []  # plan 10 fills this hook
-    golden: Callable[[str], list[dict[str, str]]] = lambda question: []  # plan 10 fills this hook
+    # Plan 10. Both are None when `golden.enabled` is false: the graph then runs as if there were no Golden Bucket (no span, no examples).
+    glossary: Callable[[str], list[str]] | None = None  # the definitions that the question uses
+    golden: Callable[[str, UserContext], list[dict[str, Any]]] | None = None  # similar solved questions that this user may see
     chaos: Chaos | None = None
     today: Callable[[], date] = lambda: datetime.now(timezone.utc).date()  # UTC (A17); a test sets the date
     clock: Callable[[], float] = time.monotonic  # the turn budget's clock; a test moves it to reach the time limit

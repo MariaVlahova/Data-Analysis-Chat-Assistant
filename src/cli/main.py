@@ -16,8 +16,12 @@ import typer
 
 from src.access.users import load_users, require_access
 from src.cli.commands import ChatSession, TurnFn, handle_line, run_turn
+from src.cli.bigquery_cmd import bigquery_app
 from src.cli.doctor import DoctorContext, render_checks, run_checks
+from src.cli.golden_cmd import golden_app
+from src.cli.local_data_cmd import local_data_app
 from src.cli.render import Renderer
+from src.cli.scenario_cmd import scenario_app
 from src.config import Settings, load_settings
 from src.errors import AgentError, ConfigError, ErrorKind, crash_summary, friendly, new_trace_id
 from src.guards.allowlist import load_allowlist
@@ -43,6 +47,10 @@ app = typer.Typer(
     no_args_is_help=True,
     pretty_exceptions_enable=False,  # never print a traceback with local variables to an executive
 )
+app.add_typer(local_data_app, name="local-data")  # generated sample data for running without Google Cloud
+app.add_typer(golden_app, name="golden")  # plan 10: `golden validate`
+app.add_typer(scenario_app, name="scenario")  # scripted test scenarios against the real app
+app.add_typer(bigquery_app, name="bigquery")  # `bigquery init-users`: the first of the steps for real BigQuery
 
 
 class ChaosLevel(str, Enum):
@@ -73,14 +81,19 @@ def open_session(
     chaos_seed: int | None,
     conversation: str | None,
     debug_prompts: bool = False,
+    settings: Settings | None = None,
+    gateway_wrapper: Callable[[Any], Any] | None = None,
 ) -> ChatSession:
-    """Everything that must be right before a chat can start. Raises ConfigError for a startup problem."""
+    """Everything that must be right before a chat can start. Raises ConfigError for a startup problem.
+
+    `settings` and `gateway_wrapper` are for the scenario runner (`src/scenarios`), which starts the same session as `chat` does: it
+    brings settings of its own (a data folder per run) and wraps the model gateway to record what each prompt held."""
     if chaos_seed is not None and chaos is None:
         raise ConfigError("--chaos-seed has no effect without --chaos.", fix="Add --chaos mild or --chaos harsh, or leave out --chaos-seed.")
     chaos_engine = None
     if chaos is not None:
         chaos_engine = Chaos.from_level(chaos.value, chaos_seed)  # without a seed one is drawn; it is shown in the banner
-    settings = load_settings(config)
+    settings = settings or load_settings(config)
     setup_logging(settings, debug)
     removed = purge_old_traces(settings.traces_path, settings.retention.trace_days)  # NFR22: 90 days by default
     if removed:
@@ -152,6 +165,7 @@ def open_session(
         catalog = loaded.catalog.with_policy(allowlist)
         # `doctor` audits every user and shows close matches. The chat checks this user and names no other brands.
         check_brand_mapping(directory, catalog, only_user=user.user_id, suggest_names=False)
+        golden = _open_golden(settings, allowlist, catalog, renderer)
         # The agent (plan 07): gateway, runner, the three guards, the tools and the graph. Built before the conversation is
         # created, so a failure here (an sqlglot the guard was not checked against, for one) leaves no conversation behind.
         # The checkpoints are on disk (plan 08): a confirmation that was waiting when the last chat ended is waiting still.
@@ -159,7 +173,7 @@ def open_session(
         _housekeeping("the purge of old checkpoints", lambda: _purge_old_checkpoints(settings, checkpointer))
         agent = build_agent(
             settings, user=user, catalog=catalog, allowlist=allowlist, personas=personas, persona_name=persona_name,
-            chaos=chaos_engine, checkpointer=checkpointer,
+            chaos=chaos_engine, checkpointer=checkpointer, golden=golden, gateway_wrapper=gateway_wrapper,
         )
 
         if existing is None and not conversation:
@@ -200,6 +214,25 @@ def open_session(
         agent=agent,
         checkpointer=checkpointer,
     )
+
+
+def _open_golden(settings: Settings, allowlist: Any, catalog: Any, renderer: Renderer) -> Any:
+    """Plan 10: the solved questions and the glossary, or None when `golden.enabled` is false. Nothing in them can stop the chat from
+    starting: they only add examples to a prompt, so a failure here is a warning and the chat goes on without them."""
+    if not settings.golden.enabled:
+        return None
+    try:
+        from src.golden.load import open_golden
+
+        bundle = open_golden(settings, allowlist, catalog.brands)
+    except Exception as exc:  # noqa: BLE001 - optional, see above
+        log.error("the Golden Bucket could not be loaded: %s", crash_summary(exc))
+        renderer.warning("The Golden Bucket could not be loaded, so answers will not use solved examples.")
+        return None
+    for warning in bundle.warnings:
+        log.warning("%s", warning)
+        renderer.warning(warning)
+    return bundle
 
 
 def _find_waiting_conversation(db: Database, agent: Any, checkpointer: Any, user_id: str, candidates: Callable[..., list[str]]) -> Any:
@@ -261,6 +294,11 @@ def banner(session: ChatSession) -> str:
         f"Hi {user.display_name} ({user.role}). You can see {scope}.\n"
         f"Conversation {session.conversation_id}. Type /help for commands, /quit to leave."
     )
+    if session.settings.bigquery.backend == "local":
+        text += "\nLOCAL SAMPLE DATA: these answers come from generated test data in DuckDB, not from BigQuery."
+    backend = session.settings.llm_backend
+    if backend.provider != "gemini":
+        text += f"\nLOCAL MODEL: {backend.model} at {backend.base_url} (environment {session.settings.app.environment}), not Gemini."
     if session.chaos:
         text += (f"\nChaos mode {session.chaos} is on (seed {session.chaos_seed}): faults are injected on purpose into model "
                  f"calls, queries and the SQL the model writes, to show how the agent copes. "

@@ -1,0 +1,28 @@
+# Users for real BigQuery data. Written by `python -m src.cli.main bigquery init-users`: the brands are the busiest ones in the dataset
+# (by order items), read from the data and not guessed. Edit freely; brand names are compared exactly, case and spacing count.
+# An empty brand list means no access, and only the CEO can have all_brands: true.
+users:
+  alice:
+    name: Alice
+    role: brand_manager
+    brands: ["Allegra K", "Calvin Klein"]
+  bob:
+    name: Bob
+    role: brand_manager
+    brands: ["Carhartt"]
+  carol:
+    name: Carol
+    role: brand_manager
+    brands: ["Hanes"]
+  dave:
+    name: Dave
+    role: brand_manager
+    brands: ["Volcom", "Quiksilver"]
+  ceo:
+    name: CEO
+    role: ceo
+    all_brands: true
+  nobrands:
+    name: No Brands
+    role: brand_manager
+    brands: []

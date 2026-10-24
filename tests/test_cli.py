@@ -239,7 +239,7 @@ def test_chaos_flags_are_accepted(config_path):
 def persona_project(project):
     (project / "config.yaml").write_text("persona:\n  enabled: true\n  default: default\n", encoding="utf-8")
     folder = project / "personas"
-    folder.mkdir()
+    folder.mkdir(exist_ok=True)  # the project fixture ships the default persona; this one overwrites it
     (folder / "default.yaml").write_text(
         "id: default\nversion: 1\ntone: Plain.\nsections: [Summary]\nmax_words: 100\n", encoding="utf-8"
     )

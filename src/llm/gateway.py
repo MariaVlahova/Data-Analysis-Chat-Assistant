@@ -1,4 +1,5 @@
-"""The one gateway to Gemini (plan 04, F35, NFR4, NFR9, S3, S12).
+"""The one gateway to the language model (plan 04, F35, NFR4, NFR9, S3, S12): Gemini, or in the `local` environment a model on this
+machine behind an OpenAI-compatible server (`openai_compat.py`). Which one answers is `settings.llm_backend`; everything below is the same for both.
 
 Every model call in the agent goes through `LLMGateway.generate()`. It routes the step to a chain of models and, per
 attempt: checks the breaker, checks and charges the turn budget, waits for a rate-limit token, sends, reads the reply
@@ -31,6 +32,7 @@ from src.llm.breaker import Breakers, State
 from src.llm.budget import TurnBudget, call_timeout, fits_in_turn
 from src.llm.chaos import Chaos, MalformedReply
 from src.llm.limiter import RateLimiter
+from src.llm.openai_compat import CompatClient, CompatHTTPError
 from src.llm.routing import Router, Step
 from src.observability import event, prompt_attrs, span, turn_metrics
 
@@ -144,15 +146,19 @@ class LLMGateway:
         sleep: Callable[[float], None] = time.sleep,
         jitter: Callable[[], float] = random.random,
         cost_hook: CostHook | None = None,
+        compat_client: Any = None,
     ) -> None:
         """`client` is a `google.genai.Client` (or a stand-in with `models.generate_content` and `models.list`). Without
-        one, the client is made on first use from `GEMINI_API_KEY`, so building a gateway never needs the key."""
+        one, the client is made on first use from `GEMINI_API_KEY`, so building a gateway never needs the key.
+        `compat_client` is the same for an OpenAI-compatible backend (a `CompatClient`, or one on a mock transport)."""
         self._settings = settings
         self._llm = settings.llm
-        self._router = Router(self._llm)
+        self._backend = settings.llm_backend
+        self._router = Router(self._llm, self._backend)
         self._sdk = client
+        self._compat = compat_client
         self._chaos = chaos
-        self._limiter = limiter or RateLimiter.from_config(self._llm, clock=clock, sleep=sleep)
+        self._limiter = limiter or self._make_limiter(clock, sleep)
         self._breakers = breakers or Breakers(self._llm.breaker, clock)
         self._clock = clock
         self._sleep = sleep
@@ -163,6 +169,24 @@ class LLMGateway:
     @property
     def router(self) -> Router:
         return self._router
+
+    @property
+    def provider(self) -> str:
+        return self._backend.provider
+
+    def _make_limiter(self, clock: Callable[[], float], sleep: Callable[[float], None]) -> RateLimiter:
+        if self._backend.provider == "openai_compatible":  # a local server has no free-tier limit; `rpm` only bounds a burst
+            return RateLimiter(self._backend.rpm, clock=clock, sleep=sleep)
+        return RateLimiter.from_config(self._llm, clock=clock, sleep=sleep)
+
+    @property
+    def compat_client(self) -> CompatClient:
+        """The client of an OpenAI-compatible backend, made on first use."""
+        if self._compat is None:
+            with self._lock:
+                if self._compat is None:
+                    self._compat = CompatClient.from_backend(self._backend)
+        return self._compat
 
     @property
     def client(self) -> Any:
@@ -191,7 +215,9 @@ class LLMGateway:
         return genai_types.HttpOptions(**options)
 
     def available_models(self) -> set[str]:
-        """Model IDs the key can use, from `models.list()` (A14: checked by `doctor --live`)."""
+        """Model IDs the key can use, from `models.list()` (A14: checked by `doctor --live`); for a local server, from `GET /models`."""
+        if self._backend.provider == "openai_compatible":
+            return self.compat_client.list_models(timeout=self._llm.request_timeout_s)
         return {(getattr(model, "name", "") or "").removeprefix("models/") for model in self.client.models.list()}
 
     def parallel_limit(self, requested: int) -> int:
@@ -361,8 +387,15 @@ class LLMGateway:
                 if isinstance(fault, MalformedReply):  # free text has no JSON to break: it comes back empty instead
                     return _Reply(text=MalformedReply.text if run.schema is not None else "", finish="STOP")
                 raise fault
+        system = run.system + ("\n\n" + REASK_NOTE if run.reasked and run.schema else "")
+        if self._backend.provider == "openai_compatible":
+            reply = self.compat_client.chat(
+                model=model, system=system, contents=run.contents, schema=run.schema, temperature=run.temperature,
+                max_tokens=run.max_output_tokens, timeout=call_timeout(self._llm.request_timeout_s, run.budget),
+            )
+            return _Reply(reply.text, reply.tokens_in, reply.tokens_out, reply.finish, reply.blocked)
         config = genai_types.GenerateContentConfig(
-            system_instruction=run.system + ("\n\n" + REASK_NOTE if run.reasked and run.schema else ""),
+            system_instruction=system,
             temperature=run.temperature,
             max_output_tokens=run.max_output_tokens,
             http_options=self.http_options(call_timeout(self._llm.request_timeout_s, run.budget)),
@@ -386,15 +419,23 @@ class LLMGateway:
                 log.warning("the cost hook failed: %s", crash_summary(exc))
 
     def _classify(self, exc: Exception, model: str) -> _Failure | None:
-        """A Gemini or network failure as a `_Failure`, or None when it is not one (a bug: the turn boundary reports it)."""
+        """A Gemini, local-server or network failure as a `_Failure`, or None when it is not one (a bug: the turn boundary reports it)."""
+        retry_after: float | None = None
+        code: int | None
         if isinstance(exc, genai_errors.APIError):
             code = int(exc.code or 0)
+            status = exc.status if isinstance(exc.status, str) and _STATUS_WORD.fullmatch(exc.status) else ""
+            retry_after = _retry_after(exc) if code == 429 else None
+        elif isinstance(exc, CompatHTTPError):
+            code, status = exc.code, exc.status
+        else:
+            code, status = None, ""
+        if code is not None:
             if not code:
                 return None
-            status = exc.status if isinstance(exc.status, str) and _STATUS_WORD.fullmatch(exc.status) else ""
             where = f"HTTP {code}{' ' + status if status else ''} from {model}"
             if code == 429:
-                return _Failure(model, "rate_limited", ErrorKind.LLM_RATE_LIMITED, where, retry_after=_retry_after(exc))
+                return _Failure(model, "rate_limited", ErrorKind.LLM_RATE_LIMITED, where, retry_after=retry_after)
             if code == 408 or code >= 500:
                 return _Failure(model, "timeout" if code == 408 else "server_error", ErrorKind.LLM_UNAVAILABLE, where)
             if code == 404:  # the model ID does not exist for this key: the sibling may still work

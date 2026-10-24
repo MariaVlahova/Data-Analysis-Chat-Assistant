@@ -12,6 +12,7 @@ from tests.agent_support import REVENUE_SQL, composer_reply, guard_reply, make_r
 
 ROWS = pd.DataFrame({"brand": ["Brand A"], "revenue": [1234.5]})
 BY_CUSTOMER = "SELECT SUM(oi.sale_price) AS revenue FROM order_items oi WHERE oi.user_id = {number}"
+BY_PRICE = "SELECT SUM(oi.sale_price) AS revenue FROM order_items oi WHERE oi.sale_price < {number}"
 
 
 @pytest.fixture
@@ -73,14 +74,23 @@ def test_a_query_that_filters_on_the_digits_of_a_label_is_refused_and_never_run(
     assert not rig.queries and rig.calls(Step.SQL_REPAIR) == 0  # a guard violation is never retried
 
 
-def test_the_same_query_with_a_number_that_is_no_label_runs(rig):
+def test_a_number_that_is_no_label_runs_where_it_is_no_customer_id(rig):
     digits = int(issue_label(rig))
     other = digits + 1 if digits < 99999 else digits - 1
-    rig.client.add("user_id", df=ROWS)
     rig.gateway.queue(Step.INPUT_GUARD, guard_reply(standalone="Revenue by brand"))
-    rig.gateway.queue(Step.SQL_WRITE, sql_reply(BY_CUSTOMER.format(number=other)))
+    rig.gateway.queue(Step.SQL_WRITE, sql_reply(BY_PRICE.format(number=other)))
     rig.gateway.queue(Step.COMPOSER, composer_reply("Revenue was 1,234.5."))
     assert rig.ask("revenue by brand").outcome == "answered"
+
+
+def test_a_customer_id_filter_with_a_number_that_is_no_label_is_still_refused_r6(rig):
+    digits = int(issue_label(rig))
+    other = digits + 1 if digits < 99999 else digits - 1
+    rig.gateway.queue(Step.INPUT_GUARD, guard_reply(standalone="Revenue by brand"))
+    rig.gateway.queue(Step.SQL_WRITE, sql_reply(BY_CUSTOMER.format(number=other)))
+    result = rig.ask("revenue by brand")
+    assert result.outcome == "refused" and result.error.rule_id == "PER_CUSTOMER_ROWS"
+    assert not rig.queries
 
 
 # a question about one customer by label is refused before any query ------------------------------------------------------------------

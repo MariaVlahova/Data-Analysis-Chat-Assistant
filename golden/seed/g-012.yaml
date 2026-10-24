@@ -1,0 +1,19 @@
+id: g-012
+version: 2
+status: retired
+question: "What are our best selling product types?"
+interpretation_notes: "Replaced by g-003, which counts revenue without cancelled and returned items. This older version counted every item, so it is no longer used."
+sql: |
+  SELECT p.category,
+         COUNT(*) AS items_sold
+  FROM order_items oi
+  JOIN products p ON oi.product_id = p.id
+  GROUP BY p.category
+  ORDER BY items_sold DESC
+  LIMIT 10
+report: |
+  Retired. The older report ranked categories by the number of items, including cancelled and returned ones.
+tables: [order_items, products]
+brands: ["*"]
+reviewed_by: seed-author
+created_at: 2026-09-15
