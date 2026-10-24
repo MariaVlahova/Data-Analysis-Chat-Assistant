@@ -9,6 +9,7 @@ client. No network. `Rig.ask` runs one turn inside a trace, the way the CLI does
 from __future__ import annotations
 
 import json
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ from src.errors import new_trace_id
 from src.guards.allowlist import load_allowlist
 from src.llm.fake import FakeGateway
 from src.observability import Tracer, span
+from src.storage.db import Database, open_connection, utc_now
 from tests.fake_bigquery import FakeClient
 from tests.guard_support import ALICE
 
@@ -64,6 +66,17 @@ class Rig:
     last_trace_id: str = ""
     last_row: dict[str, Any] = field(default_factory=dict)
     baseline_jobs: int = 0  # the BigQuery jobs the catalog's startup reads already ran when the rig was made
+    real_tools: bool = False  # the rig uses the real Saved Reports tools, which need migrated tables (plan 08)
+
+    def have_conversation(self, conversation_id: str) -> None:
+        """The conversation row a saved report points to (a foreign key). A no-op for a rig on the in-memory stub."""
+        if not self.real_tools:
+            return
+        with closing(open_connection(self.settings.db_path)) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO conversations (id, user_id, created_at, last_active_at) VALUES (?, ?, ?, ?)",
+                (conversation_id, self.user.user_id, utc_now(), utc_now()),
+            )
 
     @property
     def queries(self) -> list:
@@ -74,6 +87,7 @@ class Rig:
         self.turns += 1
         trace_id = new_trace_id()
         conversation = conversation_id or self.conversation_id
+        self.have_conversation(conversation)
         with self.tracer.start_turn(self.user.user_hash, conversation, f"t-{self.turns}", trace_id=trace_id, question=text) as turn:
             result = self.agent.run(
                 text=text, conversation_id=conversation, turn_id=f"t-{self.turns}", trace_id=trace_id,
@@ -107,14 +121,21 @@ def make_rig(project: Path, user: UserContext = ALICE, *, fake_bigquery: FakeCli
     gateway = agent_options.pop("gateway", None) or FakeGateway()
     # No real waiting between BigQuery retries: a test of an outage must not take seconds.
     runner = agent_options.pop("runner", None) or SafeQueryRunner(settings, sleep=lambda seconds: None, chaos=agent_options.get("chaos"))
+    real_tools = "registry" not in agent_options
+    if real_tools:
+        # The default tools are the real Saved Reports on data/db.sqlite3 (plan 08): migrate it, as `chat` does at startup.
+        with Database.from_settings(settings) as database:
+            database.migrate()
     agent = build_agent(
         settings, user=user, catalog=catalog, allowlist=allowlist, gateway=gateway, runner=runner,
         load_user=agent_options.pop("load_user", lambda: user), **agent_options,
     )
-    return Rig(
+    rig = Rig(
         agent, gateway, fake_bigquery, Tracer(project / "data" / "traces", project / "data" / "runs.jsonl"), settings, user,
-        baseline_jobs=len(fake_bigquery.jobs),
+        baseline_jobs=len(fake_bigquery.jobs), real_tools=real_tools,
     )
+    rig.have_conversation(rig.conversation_id)
+    return rig
 
 
 def echo_turn(session, text, *, trace_id, progress):

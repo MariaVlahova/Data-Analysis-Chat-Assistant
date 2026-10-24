@@ -3,11 +3,12 @@
 A chat agent that answers business questions about the `bigquery-public-data.thelook_ecommerce` dataset.
 Brand managers see only their own brands; the CEO sees all of them.
 
-> **Status:** plans 01 to 07 are built. The chat runs the agent graph (plan 07): it checks the message, plans, writes
+> **Status:** plans 01 to 08 are built. The chat runs the agent graph (plan 07): it checks the message, plans, writes
 > and guards the SQL, runs it, checks the numbers and the answer, and handles saving and deleting reports behind a
-> confirmation. Plans 03 to 05 and 07 were built and tested offline, with a scripted model and a fake BigQuery client;
-> their live steps need a Google sign-in and a Gemini key (see each plan's "Still to do"). Saved reports are held in
-> memory until plan 08 makes them real, so they do not survive closing the chat.
+> confirmation. Plans 03 to 05, 07 and 08 were built and tested offline, with a scripted model and a fake BigQuery client;
+> their live steps need a Google sign-in and a Gemini key (see each plan's "Still to do"). Saved reports are kept in
+> the SQLite database with an append-only audit log, a delete is soft with a 30-day undo, and a delete that is waiting
+> for your confirmation is still waiting when you start the chat again.
 > This README holds the setup section only. Plan 11 completes it (architecture, example run, limits).
 
 ## Prerequisites

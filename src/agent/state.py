@@ -6,8 +6,8 @@ functions close over (`deps.py`). What is here is questions, plans, guarded resu
 most `guards.rows_to_model` rows each), counts, and the final answer.
 
 State carries over between the turns of one conversation (the checkpoint thread is the conversation). So every turn starts
-from `fresh_turn_input`, which resets every per-turn field. Only `history` and `last_answer` are left out on purpose: they
-are how a follow-up question and "save that" know what came before.
+from `fresh_turn_input`, which resets every per-turn field. Only `history`, `last_answer` and `shown_labels` are left out on
+purpose: they are how a follow-up question and "save that" know what came before, and which customer labels the user has seen.
 """
 from __future__ import annotations
 
@@ -101,6 +101,7 @@ class TurnState(TypedDict, total=False):
     question: str
     history: list[Exchange]  # carries over between turns
     last_answer: dict[str, str] | None  # {title, text} of the newest answered turn; carries over
+    shown_labels: list[str]  # the numbers of the `Customer #NNNNN` labels any answer showed; carries over (a label is only a random number)
     # guard
     intent: Intent | None
     selector: dict[str, str | None] | None
@@ -139,7 +140,7 @@ def error_record(err: AgentError) -> ErrorRecord:
 def fresh_turn_input(
     *, conversation_id: str, turn_id: str, trace_id: str, user_hash: str, question: str,
 ) -> TurnState:
-    """The input of a new turn: every per-turn field reset, `history` and `last_answer` left to carry over."""
+    """The input of a new turn: every per-turn field reset, `history`, `last_answer` and `shown_labels` left to carry over."""
     return {
         "conversation_id": conversation_id, "turn_id": turn_id, "trace_id": trace_id, "user_hash": user_hash,
         "scope_label": "", "question": question,

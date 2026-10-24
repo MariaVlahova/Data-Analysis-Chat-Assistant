@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from src.access.users import UserContext
 from src.cli.render import ProgressFn, Renderer
@@ -47,6 +47,7 @@ class ChatSession:
     last_trace_id: str | None = None  # the newest turn of this chat, for a bare /trace
     catalog: SchemaCatalog | None = None  # plan 03: brands, latest date and live schema, read at startup
     agent: AgentRuntime | None = None  # plan 07: the graph, its guards and tools, built once per chat
+    checkpointer: Any = None  # plan 08: the SqliteSaver behind the agent, closed with the session
 
     def __post_init__(self) -> None:
         if self.tracer is None:
@@ -55,6 +56,15 @@ class ChatSession:
     @property
     def turn_id(self) -> str:
         return turn_id(self.turn_count)
+
+    def close(self) -> None:
+        """Close what the session opened: the checkpoint connection, then the database."""
+        from src.agent.checkpointer import close_checkpointer
+
+        try:
+            close_checkpointer(self.checkpointer)
+        finally:
+            self.db.close()  # the database closes even if the checkpoint connection would not
 
 
 TurnFn = Callable[..., str]  # (session, text, *, trace_id, progress) -> answer markdown
@@ -117,6 +127,9 @@ def _quit(session: ChatSession, arg: str) -> bool:
 
 @register_slash("new", "/new", "Start a new conversation")
 def _new(session: ChatSession, arg: str) -> None:
+    # A confirmation still waiting in this conversation is dropped, not carried out (plan 08): nothing is changed.
+    if session.agent is not None and session.agent.abandon_pending(session.conversation_id):
+        session.renderer.info("The action waiting for your confirmation was cancelled. Nothing was changed.")
     session.conversation_id = session.db.create_conversation(session.user.user_id)
     session.turn_count = 0
     session.renderer.info(f"Started a new conversation: {session.conversation_id}")

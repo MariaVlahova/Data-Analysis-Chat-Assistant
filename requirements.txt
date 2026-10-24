@@ -25,9 +25,11 @@ sqlglot>=30.24,<31
 google-genai>=1.0
 httpx>=0.27
 
-# Agent graph and checkpoints (plans 07, 08)
-langgraph>=0.2
-langgraph-checkpoint-sqlite>=2.0
+# Agent graph and checkpoints (plans 07, 08). Built and tested on langgraph 1.2.16 and langgraph-checkpoint-sqlite 3.1.2. The code
+# needs `interrupt`/`Command`, the interrupts listed on a state snapshot's tasks, and `SqliteSaver.delete_thread`; the lower bounds
+# are the major versions it was tested on, because an older release may lack one of them. Widen only after the tests pass.
+langgraph>=1.0
+langgraph-checkpoint-sqlite>=3.0
 
 # Tests
 pytest>=8.0

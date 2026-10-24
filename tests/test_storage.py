@@ -19,11 +19,11 @@ def tables(database: Database) -> set[str]:
 
 
 def test_migrations_apply_once_and_are_idempotent(db):
-    assert db.migrate() == [1]
-    assert {"conversations", "schema_migrations"} <= tables(db)
+    assert db.migrate() == [1, 2, 3]
+    assert {"conversations", "schema_migrations", "saved_reports", "delete_batches", "audit_log"} <= tables(db)
     assert db.migrate() == []  # nothing new the second time
     rows = db.conn.execute("SELECT version, name FROM schema_migrations").fetchall()
-    assert [(r["version"], r["name"]) for r in rows] == [(1, "conversations")]
+    assert [(r["version"], r["name"]) for r in rows] == [(1, "conversations"), (2, "saved_reports_audit"), (3, "report_indexes")]
 
 
 def test_a_second_connection_sees_the_same_state(tmp_path):
@@ -207,11 +207,11 @@ def test_shipped_migration_files_are_numbered_from_one():
     assert names[0] == "001_conversations.sql"
 
 
-def test_001_creates_the_turn_counter_so_plan_08_can_keep_002(db):
+def test_001_creates_the_turn_counter_and_plan_08_added_002(db):
     db.migrate()
     columns = [r["name"] for r in db.conn.execute("PRAGMA table_info(conversations)")]
     assert columns == ["id", "user_id", "created_at", "last_active_at", "turn_count"]
-    assert [p.name for p in MIGRATIONS_DIR.glob("*.sql")] == ["001_conversations.sql"]
+    assert sorted(p.name for p in MIGRATIONS_DIR.glob("*.sql")) == ["001_conversations.sql", "002_saved_reports_audit.sql", "003_report_indexes.sql"]
 
 
 def make_migrations(folder, **files):
@@ -243,3 +243,36 @@ def test_a_database_newer_than_the_code_is_refused(tmp_path):
     with Database(tmp_path / "db.sqlite3", migrations_dir=fewer) as database:
         with pytest.raises(ConfigError, match="002_b.*no migration file with that number"):
             database.migrate()
+
+
+# one clock, and no time without a zone (review finding) ---------------------------------------------------------------------------------------------------
+
+def test_a_time_without_a_zone_is_refused_rather_than_read_as_local_time():
+    from datetime import datetime, timezone
+
+    from src.storage.db import iso, now_utc
+
+    assert iso(datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)) == "2026-10-01T12:00:00+00:00"
+    with pytest.raises(ValueError, match="time zone"):
+        iso(datetime(2026, 10, 1, 12, 0))
+    assert now_utc().tzinfo is not None and iso(now_utc()).endswith("+00:00")
+
+
+def test_a_store_with_a_clock_that_has_no_zone_fails_loudly(project):
+    from datetime import datetime
+
+    from src.reports.store import ReportStore, purge_expired
+
+    Database(project / "data" / "db.sqlite3").migrate()
+    store = ReportStore(project / "data" / "db.sqlite3", hash_ids=lambda ids: "h", now=lambda: datetime(2026, 10, 1))
+    with pytest.raises(ValueError, match="time zone"):
+        store.purge_expired()
+    with pytest.raises(ValueError, match="time zone"):
+        purge_expired(project / "data" / "db.sqlite3", now=lambda: datetime(2026, 10, 1))
+
+
+def test_003_adds_the_indexes_the_undo_and_the_audit_lookups_use(db):
+    db.migrate()
+    batches = {row["name"] for row in db.conn.execute("PRAGMA index_list(delete_batches)")}
+    audit = {row["name"] for row in db.conn.execute("PRAGMA index_list(audit_log)")}
+    assert "idx_batches_owner" in batches and "idx_audit_key" in audit

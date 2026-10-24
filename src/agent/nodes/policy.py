@@ -49,6 +49,9 @@ def make_policy_context(deps: Deps):
     def policy_context(state: TurnState) -> dict:
         user = _checked_user(deps)
         deps.runtime(state).user = user
+        # A conversation resumed in a new process has shown labels this process never issued. Their numbers are no customer's ID
+        # either, so they are taken as handed out before any query can name one (plan 08, checkpoints on disk).
+        deps.result_guard.retire_session_labels(state.get("shown_labels", []))
         return {"user_hash": user.user_hash, "scope_label": scope_label(user)}
 
     return policy_context

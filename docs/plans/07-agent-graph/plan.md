@@ -1,5 +1,5 @@
 # Plan 07: Agent graph
-Status: built and tested offline with a scripted gateway and a fake BigQuery client (401 tests in the plan 07 files; 2546 in the offline suite). One step needs a Google sign-in and a Gemini key and is NOT done: task 10, the PRD stories run live with call counts and latency (see "Still to do"). Saved reports are a stub held in memory until plan 08.
+Status: built and tested offline with a scripted gateway and a fake BigQuery client (401 tests in the plan 07 files; 2546 in the offline suite). One step needs a Google sign-in and a Gemini key and is NOT done: task 10, the PRD stories run live with call counts and latency (see "Still to do"). Saved reports were a stub held in memory; plan 08 replaced it with the real tools.
 Estimate: about 2 h (our estimate; the largest plan, build it as a vertical slice) · Depends on: 01 to 06 · Blocks: 08, 09, 10
 
 **Goal:** Build the full LangGraph pipeline — Input Guard (with its delete-or-save shortcut straight to the Tool Router), Context Assembly, Planner, SQL loop (SQL Guard, dry-run, bounded repair), Result Guard, Evidence Check with a bounded replan defaulting to max_replans = 0, Composer with a numeric grounding check, Output Guard, and a real Tool Router plus HITL Gate wired to a stubbed Saved Reports tool — that answers questions, explains causes and writes reports with action items, with typed errors and honest failure messages.
@@ -339,8 +339,8 @@ Where the build differs from the text above, or fills a gap in it. Each is cover
 - **Task 10, with a Google sign-in and a Gemini key.** Run the example questions of the PRD stories US1 to US7, US14 and US15 live. Note, per turn kind, the model calls, the time, the bytes billed and the repairs. Check that a "why" turn finishes inside its budget and that `/trace` shows every step. Tell the owner if the free-tier limits make the demo flaky (S3). Until then no number in this plan's "Open items" budget row is measured.
 - **Read the real answers for the numeric check.** If it removes too many correct figures, add the code-computed `derived_facts` table to the Composer's input. Record how many it removed in the golden runs (plan 09).
 - **Read the real answers for the Output Guard's false positives** (plan 06's open item), now that answers exist.
-- **Memory.** `MemorySaver` keeps every checkpoint of the chat in memory. A long chat holds up to 50 guarded rows per sub-question for every step. Plan 08's `SqliteSaver` moves that to disk.
-- **History after a restart.** `history` and `last_answer` live in the checkpoint, so `--conversation` on a new process starts without them until plan 08's `SqliteSaver`.
+- **Memory.** `MemorySaver` keeps every checkpoint of the chat in memory. A long chat holds up to 50 guarded rows per sub-question for every step. Plan 08's `SqliteSaver` moves that to disk (done: the chat uses it).
+- **History after a restart.** `history` and `last_answer` live in the checkpoint, so `--conversation` on a new process starts without them until plan 08's `SqliteSaver` (done: they survive, and a test saves the last answer after a restart).
 
 ## Open items and defaults used
 | Item | Default used | Who answers |

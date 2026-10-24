@@ -31,6 +31,7 @@ from src.guards.sql_guard import SQLGuard
 from src.llm.budget import TurnBudget
 from src.llm.chaos import Chaos
 from src.llm.gateway import Gateway
+from src.storage.audit import AuditEntry
 from src.tools.registry import ToolRegistry
 
 # The entries of `TurnRuntime.scratch`: text the Output Guard has not passed. One list, used by every writer and by the error boundary
@@ -90,6 +91,9 @@ class Deps:
     # The key of the hash that binds a confirmation to the exact set of IDs. `build_agent` derives a lasting one from the
     # installation's salt, so a confirmation still matches after a restart; this default is for a `Deps` made by hand.
     hash_key: bytes = field(default_factory=lambda: secrets.token_bytes(32), repr=False)
+    # Where the gate's events go (plan 08, F26): a delete was asked for, confirmed, cancelled or found stale. A row has the user hash,
+    # a count and the ID-set hash, never a title. Nothing by default, so a `Deps` made by hand needs no database.
+    audit: Callable[[AuditEntry], None] = lambda entry: None
     _runtimes: dict[str, TurnRuntime] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 

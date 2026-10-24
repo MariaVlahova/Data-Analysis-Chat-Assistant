@@ -27,8 +27,40 @@ class Migration(NamedTuple):
     sql: str
 
 
+def now_utc() -> datetime:
+    """The current time as an aware UTC datetime: the one clock of the store, the audit log and the purges."""
+    return datetime.now(timezone.utc)
+
+
+def iso(moment: datetime) -> str:
+    """ISO 8601 in UTC, to the second. One format everywhere, so a text comparison of two times is a time comparison.
+
+    A time with no zone is refused: it would be read as local time and shifted, and every stored time and cutoff after it would be
+    off by the offset of the machine."""
+    if moment.tzinfo is None:
+        raise ValueError("a time without a time zone cannot be stored; use an aware UTC datetime")
+    return moment.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return iso(now_utc())
+
+
+def open_connection(path: Path) -> sqlite3.Connection:
+    """A new connection with the app's settings: autocommit (callers run their own BEGIN/COMMIT), WAL, foreign keys. It belongs to
+    the thread that opened it. (LangGraph's saver needs Python's default transactions and a connection it shares between threads,
+    so `agent/checkpointer.py` opens its own.) A connection is closed again if a setting cannot be applied, so a failed open never
+    leaves the file locked.
+    """
+    conn = sqlite3.connect(path, isolation_level=None)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+    except sqlite3.Error:
+        conn.close()
+        raise
+    return conn
 
 
 def new_conversation_id() -> str:
@@ -54,17 +86,11 @@ class Database:
     @property
     def conn(self) -> sqlite3.Connection:
         if self._conn is None:
-            conn: sqlite3.Connection | None = None
             try:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
-                # isolation_level=None: autocommit, so `transaction()` controls BEGIN/COMMIT itself.
-                conn = sqlite3.connect(self.path, isolation_level=None)
-                conn.row_factory = sqlite3.Row
-                conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute("PRAGMA foreign_keys=ON")
+                # Autocommit, so `transaction()` controls BEGIN/COMMIT itself.
+                conn = open_connection(self.path)
             except (OSError, sqlite3.Error) as exc:
-                if conn is not None:
-                    conn.close()  # do not leave the file locked behind a failed open
                 raise ConfigError(
                     f"The database could not be opened: {self.path} ({exc})",
                     fix="Check that the data folder exists and is writable, and that the file is a SQLite database.",

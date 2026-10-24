@@ -29,7 +29,7 @@ import re
 import time
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Callable, Literal, Mapping
+from typing import Any, Callable, Iterable, Literal, Mapping
 
 import numpy as np
 import pandas as pd
@@ -282,6 +282,11 @@ class ResultGuard:
         self._pseudonymizer = pseudonymizer
         self._timeout_s = timeout_s
         self._clock = clock
+
+    def retire_session_labels(self, numbers: Iterable[str]) -> None:
+        """Take the labels that earlier answers of this conversation showed (their numbers, kept in the checkpoint) as handed out in
+        this process."""
+        self._pseudonymizer.retire_labels(numbers)
 
     def references_session_label(self, text: str) -> bool:
         """True when the text (a query) holds the number of a customer label this session has shown. The caller refuses it."""
