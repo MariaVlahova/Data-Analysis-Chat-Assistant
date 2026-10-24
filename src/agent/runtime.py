@@ -22,7 +22,6 @@ It never prints. The CLI prints the answer once, after the progress is gone (S9)
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 import threading
 from dataclasses import dataclass
@@ -208,6 +207,8 @@ def build_agent(
     checkpointer: Any = None,
     clock: Callable[[], float] | None = None,
     audit: Callable[[AuditEntry], None] | None = None,
+    golden: Any = None,
+    gateway_wrapper: Callable[[Any], Any] | None = None,
 ) -> AgentRuntime:
     """The agent for one chat session. Everything but `settings`, `user`, `catalog` and `allowlist` has a real default.
 
@@ -217,6 +218,12 @@ def build_agent(
     The default tools are the real Saved Reports (plan 08) on `data/db.sqlite3`, which `Database.migrate()` must have prepared, and
     the gate's events go to its audit log. A test that passes its own `registry` gets no audit unless it passes `audit` too. The
     default checkpointer is in memory; the chat passes a `SqliteSaver` (`checkpointer.open_checkpointer`) so a pause survives.
+
+    `golden` is plan 10's `GoldenBundle` (similar solved questions and the glossary), or None for a run without it. It is used only
+    when `golden.enabled` is true in the settings, so one flag switches the Golden Bucket off.
+
+    `gateway_wrapper` receives the gateway and returns what the graph is given instead: the scenario runner's recorder, which passes every call
+    through and keeps the prompts (the traces hold hashes, not the text).
     """
     # Imported here: the Google SDKs, BigQuery and pandas load only when a chat starts (`trace`, `metrics` and `doctor` stay light).
     from src.access.users import load_users, resolve_salt
@@ -227,12 +234,12 @@ def build_agent(
     from src.guards.sql_guard import SQLGuard
     from src.llm.gateway import LLMGateway
     from src.reports.store import ReportStore
-    from src.tools.confirmation import id_set_hash
+    from src.tools.confirmation import id_hash_key, id_set_hash
     from src.tools.registry import ToolRegistry
     from src.tools.saved_reports import SavedReportsTools
 
     # The key of the ID-set hash comes from the installation's salt, so a confirmation still matches after a restart.
-    hash_key = hashlib.sha256(("id-set|" + resolve_salt(settings)).encode("utf-8")).digest()
+    hash_key = id_hash_key(resolve_salt(settings))
     output_guard = OutputGuard()
     if registry is None:
         store = ReportStore.from_settings(settings, hash_ids=lambda ids: id_set_hash(ids, hash_key))
@@ -255,7 +262,7 @@ def build_agent(
 
     deps = Deps(
         settings=settings,
-        gateway=gateway or LLMGateway(settings, chaos=chaos),
+        gateway=(gateway_wrapper or (lambda inner: inner))(gateway or LLMGateway(settings, chaos=chaos)),
         runner=runner or SafeQueryRunner(settings, chaos=chaos),
         sql_guard=SQLGuard(settings, allowlist),
         result_guard=ResultGuard(settings, allowlist, SessionPseudonymizer()),
@@ -266,6 +273,8 @@ def build_agent(
         load_user=load_user or reload_user,
         hash_key=hash_key,
         persona_text=persona_text,
+        golden=golden.examples if golden is not None else None,
+        glossary=golden.definitions if golden is not None else None,
         chaos=chaos,
         **({"clock": clock} if clock is not None else {}),
         **({"audit": audit} if audit is not None else {}),

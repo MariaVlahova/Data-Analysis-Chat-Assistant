@@ -89,8 +89,13 @@ Default keys. The last column names the plan that reads the key.
 | `delete.undo_days` | 30 | [PROPOSED] NFR17 | 08 |
 | `retention.audit_days / checkpoint_days / trace_days` | 365 / 90 / 90 | [PROPOSED] NFR21; trace days [NOT SPECIFIED], Q25 default | 02, 08 |
 | `observability.metrics_file / traces_dir` | `null` / `null`: `runs.jsonl` and `traces/` inside `app.data_dir` (set a path only to move them) | changed in plan 02 | 02 |
-| `golden.enabled / top_k / min_similarity` | `false` / 3 / 0.25 | | 10 |
-| `persona.enabled / default` | `false` / `default` | | 01 |
+| `golden.enabled / top_k / min_similarity` | `false` / 3 / 0.15 (chosen on the seed set, see plan 10) | | 10 |
+| `golden.seed_dir / glossary_file` | `golden/seed` / `glossary.yaml` | (impl) | 10 |
+| `app.environment` | `default`. One of default, develop, staging, prod, local; `OPSFLEET_ENV` overrides it. Picks the model service in `llm.environments` | (impl) | 04 |
+| `llm.environments` | gemini for default, develop, staging and prod; `local`: `openai_compatible`, `qwen/qwen3-30b-a3b-2507` at `http://localhost:1234/v1` (`LlmBackend`: provider, base_url, model, api_key_env, rpm) | (impl) | 04 |
+| `app.users_file` | `users.yaml` (`config.local.yaml` uses `users.local.yaml`) | (impl) | 10 |
+| `bigquery.backend / local_db` | `bigquery` / `data/local/thelook.duckdb`. `local` runs the guarded SQL on generated sample data in DuckDB (`src/data_access/local_bq.py`), for development and demos | (impl) | 10 |
+| `persona.enabled / default` | `true` / `default` | Decision 3.9: the static persona reaches the Composer | 01 |
 
 ### Users and brand scope (`users.yaml` → `src/access/users.py`)
 ```yaml

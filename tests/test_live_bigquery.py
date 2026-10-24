@@ -52,7 +52,8 @@ def safe(settings) -> SafeQueryRunner:
 def test_a_simple_aggregate_runs_reports_bytes_and_shows_up_in_the_trace_and_runs_jsonl(settings, safe, tmp_path):
     tracer = Tracer.from_settings(settings)
     with tracer.start_turn("livehash0001", "conv-live", "t-1", trace_id="1ee70003") as turn:
-        outcome = safe.run(SystemQuery(f"SELECT COUNT(*) AS items FROM {safe.table_ref('order_items')}"))
+        # A column, not COUNT(*): BigQuery answers a bare COUNT(*) from table metadata and scans 0 bytes.
+        outcome = safe.run(SystemQuery(f"SELECT COUNT(sale_price) AS items FROM {safe.table_ref('order_items')}"))
     assert int(outcome.df["items"].iloc[0]) > 0
     assert outcome.bytes_processed > 0 and outcome.bytes_billed >= 0 and outcome.total_rows == 1
     spans = [json.loads(line) for line in tracer.trace_path(turn.trace_id).read_text(encoding="utf-8").splitlines()]
@@ -61,11 +62,12 @@ def test_a_simple_aggregate_runs_reports_bytes_and_shows_up_in_the_trace_and_run
     assert row["bq_queries"] == 1 and row["bytes_billed"] == outcome.bytes_billed
 
 
-def test_a_real_dry_run_reports_the_statement_type_and_bytes(safe):
-    info = safe.dry_run(SystemQuery(f"SELECT COUNT(*) AS items FROM {safe.table_ref('order_items')}"))
-    # The NOT_SELECT check fails closed. If BigQuery did not report the type, this raises GUARD_VIOLATION with
-    # "statement type None" and every query is refused: that is the sign to look at what a dry run really returns.
-    assert info.statement_type == "SELECT" and info.bytes_processed > 0
+def test_a_real_dry_run_accepts_a_select_and_reports_bytes(safe):
+    info = safe.dry_run(SystemQuery(f"SELECT COUNT(sale_price) AS items FROM {safe.table_ref('order_items')}"))
+    # The runner checks the statement type itself and fails closed (NOT_SELECT). If BigQuery did not report the type, this
+    # raises GUARD_VIOLATION with "statement type None" and every query is refused: that is the sign to look at what a dry
+    # run really returns. Returning at all means BigQuery said SELECT.
+    assert info.bytes_processed > 0
 
 
 def test_the_catalog_reads_the_live_schema_brands_and_latest_date(settings):

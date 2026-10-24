@@ -1,0 +1,32 @@
+id: g-008
+version: 1
+status: approved
+question: "Write a report on how the business did last quarter, with insights and next steps."
+interpretation_notes: "A report has three sections in this order: Summary, Key insights, Action items. Use the headline revenue, the trend by month and the main breakdown by category. Action items follow from the insights and say who could do what. The quarter comes from the date hints, never from the clock."
+sql: |
+  SELECT DATE_TRUNC(DATE(oi.created_at), MONTH) AS month,
+         p.category,
+         SUM(oi.sale_price) AS revenue,
+         COUNT(DISTINCT oi.order_id) AS orders
+  FROM order_items oi
+  JOIN products p ON oi.product_id = p.id
+  WHERE oi.status NOT IN ('Cancelled', 'Returned')
+    AND oi.created_at >= TIMESTAMP '2026-07-01'
+    AND oi.created_at < TIMESTAMP '2026-10-01'
+  GROUP BY month, p.category
+  ORDER BY month, revenue DESC
+report: |
+  ## Summary
+  One short paragraph: how revenue did over the quarter, whether it grew, and the single biggest reason.
+
+  ## Key insights
+  Three or four findings, each backed by a figure from the results: the trend by month, the categories that led and lagged, and
+  anything that changed against the quarter before. Mark a guess as a possible reason, not a finding.
+
+  ## Action items
+  Two or three steps that follow from the insights, each with who could do it, for example the category lead, the marketing team or
+  the supply planner.
+tables: [order_items, products]
+brands: ["*"]
+reviewed_by: seed-author
+created_at: 2026-10-24

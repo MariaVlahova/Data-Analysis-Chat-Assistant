@@ -1,0 +1,13 @@
+id: resilience-chaos
+title: With faults injected into the data and the SQL, the chat answers or fails politely
+description: >
+  The harsh chaos profile with a fixed seed makes queries time out or come back unavailable and breaks some of the SQL the model writes. The
+  runner retries, the SQL loop repairs, and what cannot be saved ends in a friendly message with a trace ID. The outcome is not fixed; a crash,
+  a missing trace ID, an exceeded budget or a leak is a failure.
+user: carol
+tags: [resilience]
+chaos: {level: harsh, seed: 3}
+turns:
+  - say: What was my revenue in 2025?
+    expect:
+      outcome: [answered, partial, failed, refused]

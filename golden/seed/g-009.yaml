@@ -1,0 +1,24 @@
+id: g-009
+version: 1
+status: approved
+question: "Which categories are in the core range for Maple & Co, and how is each one selling?"
+interpretation_notes: "For Maple & Co the core range means Tops & Tees, Jeans and Sweaters, as agreed with the brand team. Selling means revenue and units without cancelled or returned items."
+sql: |
+  SELECT p.category,
+         SUM(oi.sale_price) AS revenue,
+         COUNT(*) AS units_sold
+  FROM order_items oi
+  JOIN products p ON oi.product_id = p.id
+  WHERE oi.status NOT IN ('Cancelled', 'Returned')
+    AND p.category IN ('Tops & Tees', 'Jeans', 'Sweaters')
+  GROUP BY p.category
+  ORDER BY revenue DESC
+report: |
+  The core range is the three categories the brand team agreed on, and the report should treat them as one group. Say which of the
+  three leads, which lags, and whether the core range carries most of the brand's revenue or only part of it.
+
+  Name the brand once at the top and keep the rest in terms of the range. Suggest one action for the category that lags.
+tables: [order_items, products]
+brands: ["Maple & Co"]
+reviewed_by: seed-author
+created_at: 2026-10-24

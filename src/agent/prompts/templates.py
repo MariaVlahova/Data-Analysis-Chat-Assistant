@@ -9,6 +9,7 @@ checked by code, and confirmation never comes from a model.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
@@ -37,10 +38,11 @@ class PromptParts:
         return prompt_attrs(self.template_id, self.version, self.system)
 
 
-def untrusted(text: str, source: str = "") -> str:
-    """Wrap text that came from data or a user. A closing tag inside the text is broken, so it cannot end the block early."""
+def untrusted(text: str, source: str = "", ident: str = "") -> str:
+    """Wrap text that came from data or a user. A closing tag inside the text is broken, so it cannot end the block early.
+    `ident` names the record inside the source (a trio's ID), so a trace and a prompt can be matched."""
     body = str(text).replace("</untrusted_data", "<\\/untrusted_data").replace("<untrusted_data", "<\\untrusted_data")
-    tag = f' source="{source}"' if source else ""
+    tag = (f' source="{source}"' if source else "") + (f' id="{re.sub(r"[^A-Za-z0-9_-]", "", ident)}"' if ident else "")
     return f"<untrusted_data{tag}>\n{body}\n</untrusted_data>"
 
 
@@ -121,7 +123,7 @@ def planner_prompt(
         parts.append("Definitions:\n" + _glossary_block(definitions))
     if golden_notes:
         used.add(c.GOLDEN_NOTES)
-        parts.append("Notes from similar solved questions:\n" + untrusted(_bullets(golden_notes), "golden"))
+        parts.append("Notes from similar solved questions:\n" + untrusted(_bullets(golden_notes), "golden_trio"))
     if replan:
         used |= {c.MISSING, c.SUMMARIES}
         parts.append(REPLAN_NOTE)
@@ -153,8 +155,9 @@ def sql_prompt(
         parts.append("Definitions:\n" + _glossary_block(definitions))
     if golden:
         used |= {c.GOLDEN_NOTES, c.GOLDEN_SQL}
-        parts.append("Similar solved questions:\n" + untrusted(
-            "\n\n".join(f"question: {g.get('question', '')}\nnotes: {g.get('notes', '')}\nsql: {g.get('sql', '')}" for g in golden), "golden"))
+        parts.append("Similar solved questions (examples of the pattern, not answers to this question):\n" + "\n".join(
+            untrusted(f"question: {g.get('question', '')}\nnotes: {g.get('notes', '')}\nsql: {g.get('sql', '')}", "golden_trio", g.get("id", ""))
+            for g in golden))
     if earlier:
         used.add(c.EARLIER_RESULTS)
         parts.append("Results of the earlier sub-questions this one depends on (rows and totals, already checked):\n" + "\n".join(
@@ -234,7 +237,7 @@ def composer_prompt(
         parts.append("Definitions in use:\n" + _glossary_block(definitions))
     if golden_report:
         used.add(c.GOLDEN_REPORT)
-        parts.append("Excerpt of an analyst report, for style only:\n" + untrusted(golden_report, "golden"))
+        parts.append("Excerpt of an analyst report, for style only:\n" + untrusted(golden_report, "golden_trio"))
     if rejected_numbers:
         parts.append(
             "Your previous draft used these numbers, which are not in the results: " + ", ".join(rejected_numbers) +

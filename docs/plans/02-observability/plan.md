@@ -60,6 +60,7 @@ Two things the plans that emit spans must do themselves: a model call is **both*
 |---|---|---|
 | `turn` | 02 | user_hash, conversation_id, turn_id, intent, turn_kind, outcome |
 | `input_guard`, `context_assembly`, `planner`, `sql_loop`, `result_guard`, `evidence_check`, `composer`, `output_guard`, `tool_router`, `hitl_gate` | 07 | step status, counts |
+| `golden.retrieve` | 10 | trio IDs and scores, and a `summary` line of both for `/trace`. Never a trio's text; absent when `golden.enabled` is false |
 | `llm.call` | 04 | step, model, attempt, tokens in/out, latency, retry reason, fallback used, prompt version |
 | `bq.dry_run`, `bq.query` | 03 | final SQL (masked), bytes processed, bytes billed, rows, cache hit, error kind |
 | `guard.sql` span (kind `guard`) | 05 | one around every SQL Guard check, holding its `guard.decision` event. Attributes: scope mode, fingerprint, tables, limit, rewrites, per_customer, demographic. Never the SQL (the `bq.*` spans hold that, masked) |

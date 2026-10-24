@@ -445,14 +445,13 @@ def test_a_label_deep_in_a_long_answer_or_in_an_older_one_is_refused_too(durable
 
 
 def test_a_number_that_was_never_shown_as_a_label_is_not_refused(durable):
-    """The control: the same question about another number runs, so the refusal above is the label rule and nothing else."""
-    import pandas as pd
-
+    """The control: the same question about another number is not a label. It is still a lookup of one customer by ID, which the
+    SQL Guard refuses on its own (rule R6), so the refusal above is the label rule and nothing else."""
     show_a_label(durable, 48213)
     durable.restart()
-    durable.fake_bigquery.add("user_id", df=pd.DataFrame({"revenue": [10.0]}))
-    ask_about_customer(durable, 77001)
-    assert len(durable.rig.queries) == 1
+    result = ask_about_customer(durable, 77001)
+    assert result.outcome == "refused" and result.error.rule_id == "PER_CUSTOMER_ROWS"
+    assert durable.rig.queries == []
 
 
 def test_a_label_shown_before_a_restart_is_never_issued_again_to_another_customer(durable):

@@ -1,0 +1,13 @@
+id: schema-question
+title: '"What data do you have?" lists tables and columns and no personal-data column'
+description: >
+  The answer is built by code from the allow-list, not by the model, so it is exact: the approved tables, their allowed columns, and none of
+  the columns that hold personal details.
+user: bob
+tags: [smoke, schema, pii]
+turns:
+  - say: What data do you have, and what can I ask about?
+    expect:
+      outcome: [answered]
+      contains: ["order_items", "products", "sale_price"]
+      not_contains: ["first_name", "last_name", "email", "street_address", "postal_code", "latitude", "longitude", "user_geom"]

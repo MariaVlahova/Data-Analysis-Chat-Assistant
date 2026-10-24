@@ -165,7 +165,7 @@ def load_user_directory(path: Path, salt: str) -> UserDirectory:
 
 
 def users_path(settings: Settings) -> Path:
-    return settings.resolve(USERS_FILE_NAME)
+    return settings.resolve(settings.app.users_file)
 
 
 def load_users(settings: Settings, path: Path | None = None) -> UserDirectory:

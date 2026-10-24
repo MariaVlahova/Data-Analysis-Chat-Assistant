@@ -8,10 +8,14 @@ app:
   timezone: UTC          # A17
   data_dir: data         # runtime files: db.sqlite3, runs.jsonl, traces/, logs/, cache/ (git-ignored)
   # user_hash_salt: ...  # default: generated once into data/user_hash_salt
+  # users_file: users.yaml  # config.local.yaml names users.local.yaml
+  # environment: default     # default | develop | staging | prod use Gemini; local uses a model on this machine (llm.environments). OPSFLEET_ENV overrides
 
 bigquery:
   project_id: null                   # null: GOOGLE_CLOUD_PROJECT or default credentials
   dataset: bigquery-public-data.thelook_ecommerce
+  # backend: bigquery               # "local": generated sample data in DuckDB, no Google sign-in (config.local.yaml, docs/local-testing.md)
+  # local_db: data/local/thelook.duckdb
   max_bytes_billed: 536870912        # 512 MiB per query [OPEN] NFR6, Q3
   query_timeout_s: 30                # [OPEN] Q3
   sql_row_limit: 1000                # the forced LIMIT
@@ -45,6 +49,8 @@ budget:                              # all [OPEN] until Q3 is answered (derivati
   bytes_per_turn: 2147483648         # 2 GiB
 
 llm:                                 # plan 04 owns these keys
+  # environments:                    # which model service each environment uses. Defaults: gemini everywhere but local
+  #   local: {provider: openai_compatible, base_url: http://localhost:1234/v1, model: qwen/qwen3-30b-a3b-2507}   # api_key_env: NAME_OF_A_VARIABLE if the server wants a key
   pro_enabled: false
   models:
     light: gemini-3.5-flash-lite
@@ -76,8 +82,10 @@ observability: {}                    # runs.jsonl and traces/ live inside app.da
 golden:
   enabled: false
   top_k: 3
-  min_similarity: 0.25
+  min_similarity: 0.15               # chosen on probe questions, see tests/test_golden_index.py
+  # seed_dir: golden/seed            # one trio per YAML file
+  # glossary_file: glossary.yaml
 
 persona:
-  enabled: false                     # the one static persona, see personas/default.yaml
+  enabled: true                      # the one static persona, see personas/default.yaml
   default: default

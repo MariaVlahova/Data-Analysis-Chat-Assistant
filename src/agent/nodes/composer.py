@@ -53,6 +53,7 @@ def compose(deps: Deps, runtime: TurnRuntime, state: TurnState, rejected: tuple[
         date_range=plan.get("date_range"), scope_label=state.get("scope_label", ""), notices=list(dict.fromkeys(notices)),
         persona_text=context.get("persona_text", ""),
         definitions=relevant_definitions(standalone, context.get("glossary_terms")), rejected_numbers=rejected,
+        golden_report=context.get("trio_report", ""),  # an excerpt of one analyst report, for style only (plan 10)
     )
     reply = deps.gateway.generate(
         Step.COMPOSER, system=parts.system, contents=parts.contents, schema=ComposerOut, budget=runtime.budget,

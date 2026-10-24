@@ -22,7 +22,7 @@ from google.cloud import bigquery
 from src.config import Settings
 from src.data_access.bq_client import BigQueryRunner
 from src.data_access.errors_map import Phase, classify, job_may_still_run, setup_error
-from src.errors import AgentError, ErrorKind, crash_summary
+from src.errors import AgentError, ConfigError, ErrorKind, crash_summary
 from src.guards.query import ArrayParam, GuardedQuery
 from src.llm.budget import call_timeout
 from src.observability import current_trace_id, guard_decision, span, turn_metrics
@@ -114,7 +114,14 @@ class QueryOutcome:
 
 
 def make_runner(settings: Settings) -> BigQueryRunner:
-    """The one place a BigQuery client is created. Tests replace this with a fake."""
+    """The one place a BigQuery client is created. Tests replace this with a fake.
+
+    `bigquery.backend: local` returns the DuckDB stand-in over generated sample data (`local_bq.py`), which has the same `.client`
+    surface. It is imported here, not at the top, so a live run never needs DuckDB."""
+    if settings.bigquery.backend == "local":
+        from src.data_access.local_bq import LocalBigQueryRunner
+
+        return LocalBigQueryRunner(settings.resolve(settings.bigquery.local_db), settings.bigquery.dataset)  # type: ignore[return-value]
     return BigQueryRunner(project_id=settings.gcp_project)
 
 
@@ -181,6 +188,8 @@ class SafeQueryRunner:
                 if self._runner is None:
                     try:
                         self._runner = make_runner(self._settings)
+                    except ConfigError:
+                        raise  # the local sample data is missing or unreadable: its own message says how to build it
                     except Exception as exc:  # noqa: BLE001 - whatever stops the client from being created is a setup problem
                         raise (classify(exc, "metadata") or setup_error(exc)) from None
         return self._runner

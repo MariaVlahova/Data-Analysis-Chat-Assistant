@@ -3,7 +3,7 @@
 A chat agent that answers business questions about the `bigquery-public-data.thelook_ecommerce` dataset.
 Brand managers see only their own brands; the CEO sees all of them.
 
-> **Status:** plans 01 to 08 are built. The chat runs the agent graph (plan 07): it checks the message, plans, writes
+> **Status:** plans 01 to 08 and 10 are built. The chat runs the agent graph (plan 07): it checks the message, plans, writes
 > and guards the SQL, runs it, checks the numbers and the answer, and handles saving and deleting reports behind a
 > confirmation. Plans 03 to 05, 07 and 08 were built and tested offline, with a scripted model and a fake BigQuery client;
 > their live steps need a Google sign-in and a Gemini key (see each plan's "Still to do"). Saved reports are kept in
@@ -89,6 +89,25 @@ The answer tone comes from one static persona file, `personas/default.yaml`. Set
 
 Exit codes: `0` normal, `2` a startup problem (bad config, unknown user, no brands, database problem),
 `1` a failed `doctor` check or a `trace` ID that was not found.
+
+## Running without Google Cloud (generated sample data)
+
+`config.local.yaml` runs the whole app on this machine: generated test data in a DuckDB file instead of BigQuery, and
+`qwen/qwen3-30b-a3b-2507` served by [LM Studio](https://lmstudio.ai/) (load the model and start its local server,
+`http://localhost:1234/v1`) instead of Gemini. No Google sign-in, no key, no cost. Every guard, the graph, saved reports and the traces
+run as in a live run. The banner says `LOCAL SAMPLE DATA` and `LOCAL MODEL`. The environments `default`, `develop`, `staging` and `prod`
+keep Gemini; `app.environment` or `OPSFLEET_ENV` chooses (`OPSFLEET_ENV=default` runs the sample data with Gemini).
+
+```bash
+python -m src.cli.main local-data build        --config config.local.yaml   # about a second; the same seed gives the same rows
+python -m src.cli.main local-data seed-reports --config config.local.yaml   # a few saved reports to try delete and undo
+python -m src.cli.main chat --user alice       --config config.local.yaml   # users: alice, bob, carol, dave, ceo, nobrands
+python -m src.cli.main scenario run            --config config.local.yaml   # scripted test scenarios against the app and the local model
+```
+
+`docs/local-testing.md` lists the scenarios, what the data holds, what to ask each user, how to check an answer, what a local run cannot prove,
+and how to test the BigQuery part on real BigQuery: `config.bigquery.yaml` runs the same scenarios against the real dataset with the local model
+(`bigquery init-users` writes the users from the real brand list; section 7 has the steps in order).
 
 ## Users and brands (`users.yaml`)
 

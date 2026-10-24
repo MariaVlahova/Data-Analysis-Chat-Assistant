@@ -1,0 +1,27 @@
+id: g-005
+version: 1
+status: approved
+question: "Why do customers in one state spend less per head than customers in another state?"
+interpretation_notes: "Spend per customer is revenue divided by the number of distinct customers in the state. Look for the cause in orders per customer, items per order, the average item price and the category mix. States with fewer than ten customers are hidden by the privacy rule, so say when a state is missing."
+sql: |
+  SELECT u.state,
+         COUNT(DISTINCT u.id) AS customers,
+         SUM(oi.sale_price) AS revenue,
+         SAFE_DIVIDE(SUM(oi.sale_price), COUNT(DISTINCT u.id)) AS spend_per_customer,
+         SAFE_DIVIDE(COUNT(DISTINCT oi.order_id), COUNT(DISTINCT u.id)) AS orders_per_customer,
+         AVG(oi.sale_price) AS avg_item_price
+  FROM order_items oi
+  JOIN users u ON u.id = oi.user_id
+  WHERE oi.status NOT IN ('Cancelled', 'Returned')
+  GROUP BY u.state
+  ORDER BY spend_per_customer DESC
+report: |
+  The gap between the two states comes from how often customers order and what they put in the basket, not from one single cause.
+  Compare orders per customer first, then the average price of an item, then the mix of categories.
+
+  Say which of these explains most of the gap, and mark anything the data cannot show, such as the customers' budget or local
+  competition, as a possible reason and not a finding. End with what could be tested next.
+tables: [order_items, users]
+brands: ["*"]
+reviewed_by: seed-author
+created_at: 2026-10-24

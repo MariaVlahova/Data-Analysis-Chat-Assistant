@@ -1,0 +1,15 @@
+id: golden-brand-filter
+title: A question that matches another brand's seed does not retrieve it
+description: >
+  g-009 is tagged Maple & Co and its question is almost the one typed here. bob does not have that brand, so the filter must leave it out
+  before scoring, and no part of it may reach a prompt (invariant I3 checks the prompts for the brand name).
+user: bob
+tags: [golden, scope]
+requires: [sample_data, golden]
+turns:
+  - say: Which categories are in the core range for Maple & Co, and how is each one selling?
+    expect:
+      outcome: [answered, partial, refused]
+      allow_mentions: [Maple & Co]
+      trace:
+        golden_trios_exclude: [g-009]

@@ -291,7 +291,7 @@ def test_the_turn_gets_the_stored_trace_id(project, config_path, monkeypatch):
 def test_a_persona_version_is_recorded_when_the_persona_is_on(project):
     (project / "config.yaml").write_text("persona:\n  enabled: true\n  default: default\n", encoding="utf-8")
     folder = project / "personas"
-    folder.mkdir()
+    folder.mkdir(exist_ok=True)  # the project fixture ships the default persona
     (folder / "default.yaml").write_text(
         "id: default\nversion: 1\ntone: Plain.\nsections: [Summary]\nmax_words: 100\n", encoding="utf-8"
     )

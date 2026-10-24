@@ -1,0 +1,17 @@
+id: why-casa-lino-returns
+title: A comparison question finds the category whose items come back far more often
+description: >
+  Casa Lino dresses are returned several times more often than any other item. The question asks to compare categories; finding Dresses is
+  advisory, because it depends on how well the model plans.
+user: dave
+tags: [why]
+requires: [sample_data]
+turns:
+  - say: Why is the return rate so high for Casa Lino? Compare its categories.
+    expect:
+      outcome: [answered, partial]
+      trace:
+        queries_min: 1
+    advisory:
+      contains: ["Dresses"]
+      contains_any: ["return rate", "returned", "returns"]

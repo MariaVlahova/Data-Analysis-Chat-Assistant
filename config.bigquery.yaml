@@ -1,0 +1,42 @@
+# Real BigQuery data with the model on this machine: the BigQuery steps of local testing. Gemini is not used and needs no key.
+#
+# One-time setup (a Google sign-in, which only you can do):
+#   gcloud auth application-default login
+#   put GOOGLE_CLOUD_PROJECT=your-project-id in .env      (BigQuery jobs run, and are billed, in that project)
+#   python -m src.cli.main doctor --refresh --config config.bigquery.yaml
+#   python -m src.cli.main bigquery init-users --config config.bigquery.yaml     (writes users.bigquery.yaml from the real brand list)
+#
+# Then, in this order (docs/local-testing.md, section 7):
+#   pytest -m live -s tests/test_live_bigquery.py tests/test_live_sql_guard.py tests/test_live_golden.py
+#   python -m src.cli.main golden validate --config config.bigquery.yaml
+#   python -m src.cli.main scenario run    --config config.bigquery.yaml
+#   python -m src.cli.main chat --user alice --config config.bigquery.yaml
+#
+# Everything not listed here keeps the default of config.yaml. The data is the public dataset; queries are checked by a dry run first and
+# refused above bigquery.max_bytes_billed, so a mistake cannot cost more than that per query.
+
+app:
+  environment: local                 # llm.environments.local: qwen/qwen3-30b-a3b-2507 on this machine (OPSFLEET_ENV=default uses Gemini)
+  data_dir: data/bigquery            # its own database, traces, logs and schema cache, apart from the sample data and a plain live run
+  users_file: users.bigquery.yaml    # written by `bigquery init-users`: real brands from the dataset
+
+bigquery:
+  backend: bigquery
+  # project_id: your-project-id      # or GOOGLE_CLOUD_PROJECT in .env
+  # dataset stays bigquery-public-data.thelook_ecommerce
+
+guards:
+  # schema_allowlist.yaml is marked reviewed_against_live: false until a person has compared it with the live columns. For these test runs
+  # the chat may start with a warning. Setting the flag to true after the review is the owner's step, not a test's.
+  require_reviewed_allowlist: false
+
+golden:
+  enabled: true                      # the two brand-specific seeds (g-009, g-010) name sample-data brands, so the brand check leaves them out here
+
+# A 30B model on a laptop writes about 10 tokens a second: longer limits than config.yaml, the same number of model calls per turn.
+llm:
+  request_timeout_s: 300
+budget:
+  simple: {calls: 8, seconds: 480}
+  why: {calls: 20, seconds: 1200}
+  report: {calls: 20, seconds: 1200}

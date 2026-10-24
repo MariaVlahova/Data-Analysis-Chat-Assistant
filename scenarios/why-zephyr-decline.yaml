@@ -1,0 +1,18 @@
+id: why-zephyr-decline
+title: A "why" question finds the cause that was planted in the data
+description: >
+  Zephyr Sport sells much less in the last 60 days than in the 60 days before. This is the multi-step path: the Planner splits the question,
+  several queries run, the Evidence Check looks at what came back, and the Composer explains with evidence. What the model finds is advisory;
+  that it plans, queries and answers inside the budget is required.
+user: dave
+tags: [why]
+requires: [sample_data]
+turns:
+  - say: Why did the revenue of Zephyr Sport fall in the last 60 days compared with the 60 days before?
+    expect:
+      outcome: [answered, partial]
+      trace:
+        queries_min: 2
+    advisory:
+      contains: ["Zephyr Sport"]
+      contains_any: ["fewer", "decline", "drop", "lower", "decrease", "fell", "fall"]

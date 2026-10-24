@@ -1,0 +1,26 @@
+id: golden-retrieval
+title: A question close to a seed finds that seed, and only seeds the user may see
+description: >
+  "Which product categories drive the most revenue?" is the seed g-003. The trace must show it. The brand-specific seed g-010 is tagged
+  O'Hara Outfitters, which alice does not have, so it must not be retrieved. The answer's figures are checked as in any other scenario.
+user: alice
+tags: [smoke, golden]
+requires: [golden]
+turns:
+  - say: >
+      Which product categories drive the most revenue for my brands in 2025? Count revenue as the sale price of items that were not cancelled
+      or returned.
+    expect:
+      outcome: [answered, partial]
+      trace:
+        golden_trios_include: [g-003]
+        golden_trios_exclude: [g-010]
+        queries_min: 1
+      numbers:
+        - label: revenue of the top category of my brands, 2025
+          sql: |
+            SELECT MAX(revenue) FROM (
+              SELECT SUM(oi.sale_price) AS revenue FROM order_items oi JOIN products p ON p.id = oi.product_id
+              WHERE p.brand IN {brands} AND oi.status NOT IN ('Cancelled', 'Returned') AND EXTRACT(YEAR FROM oi.created_at) = 2025
+              GROUP BY p.category
+            )

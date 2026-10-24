@@ -69,17 +69,22 @@ def check_python(ctx: DoctorContext) -> Check:
                  "Install a newer Python and recreate the virtual environment.")
 
 
+def _local_backend(ctx: DoctorContext) -> bool:
+    return ctx.settings is not None and ctx.settings.bigquery.backend == "local"
+
+
 @register_check
 def check_packages(ctx: DoctorContext) -> Check:
     missing = []
-    for module, pip_name in REQUIRED_MODULES:
+    modules = [*REQUIRED_MODULES, *([("duckdb", "duckdb")] if _local_backend(ctx) else [])]  # the sample data needs DuckDB
+    for module, pip_name in modules:
         try:
             importlib.import_module(module)
         except Exception:  # noqa: BLE001 - a broken install can fail in many ways
             missing.append(pip_name)
     if missing:
         return Check("Packages", "fail", "cannot import: " + ", ".join(missing), "Run: pip install -r requirements.txt")
-    return Check("Packages", "ok", f"all {len(REQUIRED_MODULES)} import")
+    return Check("Packages", "ok", f"all {len(modules)} import")
 
 
 @register_check
@@ -119,6 +124,9 @@ def check_users(ctx: DoctorContext) -> Check:
 
 @register_check
 def check_gemini_key(ctx: DoctorContext) -> Check:
+    if ctx.settings is not None and ctx.settings.llm_backend.provider != "gemini":
+        backend = ctx.settings.llm_backend
+        return Check("GEMINI_API_KEY", "skip", f"not needed: environment '{ctx.settings.app.environment}' uses {backend.model} at {backend.base_url}")
     if Secrets.from_env().gemini_api_key is not None:  # never print the key
         return Check("GEMINI_API_KEY", "ok", "is set")
     return Check("GEMINI_API_KEY", "fail", "is not set",
@@ -128,6 +136,8 @@ def check_gemini_key(ctx: DoctorContext) -> Check:
 @register_check
 def check_google_credentials(ctx: DoctorContext) -> Check:
     name = "Google Cloud credentials"
+    if _local_backend(ctx):
+        return Check(name, "skip", "not needed: bigquery.backend is local (generated sample data)")
     key_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
     if key_file and not Path(key_file).is_file():
         return Check(name, "fail", "GOOGLE_APPLICATION_CREDENTIALS points to a file that does not exist",
@@ -149,6 +159,8 @@ def check_google_credentials(ctx: DoctorContext) -> Check:
 @register_check
 def check_google_project(ctx: DoctorContext) -> Check:
     name = "Google Cloud project"
+    if _local_backend(ctx):
+        return Check(name, "skip", "not needed: bigquery.backend is local (generated sample data)")
     configured = ctx.settings.gcp_project if ctx.settings else Secrets.from_env().google_cloud_project
     project = configured or ctx.adc_project
     if project:

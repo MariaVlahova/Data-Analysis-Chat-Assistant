@@ -71,8 +71,9 @@ def check_bigquery_dataset(ctx: DoctorContext) -> Check:
     if isinstance(loaded, Check):
         return loaded
     catalog = loaded.catalog
+    where = "LOCAL SAMPLE DATA, not BigQuery, " if ctx.settings.bigquery.backend == "local" else ""
     detail = (
-        f"{ctx.settings.bigquery.dataset}: {len(catalog.tables)} tables, latest order item {catalog.latest_date.isoformat()}, "
+        f"{where}{ctx.settings.bigquery.dataset}: {len(catalog.tables)} tables, latest order item {catalog.latest_date.isoformat()}, "
         f"read {catalog.checked_at:%Y-%m-%d %H:%M} UTC"
     )
     note = catalog.freshness_note()

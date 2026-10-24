@@ -1,0 +1,29 @@
+# Users for the generated sample data (config.local.yaml). The brands are the ones `local-data build` creates; they are
+# invented and do not exist in the real thelook_ecommerce dataset. users.yaml keeps the live placeholders.
+# Rules are the same as users.yaml: brand names match exactly (case and spacing count), an empty list means no access,
+# and only the CEO can have all_brands: true.
+users:
+  alice:                   # two big brands, one with an ampersand in its name
+    name: Alice
+    role: brand_manager
+    brands: ["Maple & Co", "Nordic Peak"]
+  bob:                     # one brand with an apostrophe in its name
+    name: Bob
+    role: brand_manager
+    brands: ["O'Hara Outfitters"]
+  carol:                   # a tiny brand: most groups are below 10 customers, so the small-group rule has work to do
+    name: Carol
+    role: brand_manager
+    brands: ["Wren & Willow"]
+  dave:                    # the brands with planted causes: Zephyr Sport sells less lately, Casa Lino dresses come back
+    name: Dave
+    role: brand_manager
+    brands: ["Zephyr Sport", "Casa Lino"]
+  ceo:
+    name: CEO
+    role: ceo
+    all_brands: true
+  nobrands:                # S14: the chat must refuse to start for this user
+    name: No Brands
+    role: brand_manager
+    brands: []

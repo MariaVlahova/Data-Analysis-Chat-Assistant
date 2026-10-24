@@ -69,7 +69,7 @@ def test_the_sql_writer_prompt_has_no_brand_names_no_persona_and_no_identity(pro
     from src.personas import PersonaStore
 
     fake_bigquery.add("revenue", df=pd.DataFrame({"brand": ["Brand A"], "revenue": [5.0]}))
-    (project / "personas").mkdir()
+    (project / "personas").mkdir(exist_ok=True)  # the project fixture ships the default persona; this test overwrites it
     (project / "personas" / "default.yaml").write_text(
         "id: default\nversion: 1\ntone: Pirate talk.\nsections: [Summary]\nmax_words: 100\n", encoding="utf-8")
     rig = make_rig(project, fake_bigquery=fake_bigquery, personas=PersonaStore(project / "personas"), persona_name="default")

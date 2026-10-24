@@ -1,0 +1,27 @@
+id: g-004
+version: 1
+status: approved
+question: "Compare two products side by side: how many sold, what they earned and how often they came back."
+interpretation_notes: "Compare by product, with units sold, revenue, returned units and the return rate for each. Cancelled items are left out. Items that are still being processed cannot have been returned yet, so the return rate of a very recent period looks better than it is."
+sql: |
+  SELECT p.name AS product,
+         COUNT(*) AS units_sold,
+         SUM(oi.sale_price) AS revenue,
+         COUNTIF(oi.status = 'Returned') AS returned_units,
+         SAFE_DIVIDE(COUNTIF(oi.status = 'Returned'), COUNT(*)) AS return_rate
+  FROM order_items oi
+  JOIN products p ON oi.product_id = p.id
+  WHERE oi.status != 'Cancelled'
+    AND p.name IN ('Example product one', 'Example product two')
+  GROUP BY p.name
+  ORDER BY revenue DESC
+report: |
+  Put the two products next to each other on the same three measures: how many were sold, how much they earned and how often they
+  were returned. Start with the one that leads and say by how much in plain words.
+
+  A product that sells more but comes back more often can earn less than it looks. Say which of the two is healthier on balance and
+  what could explain the gap, marking any explanation that the data does not show as a possible reason.
+tables: [order_items, products]
+brands: ["*"]
+reviewed_by: seed-author
+created_at: 2026-10-24

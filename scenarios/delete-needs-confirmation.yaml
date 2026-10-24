@@ -1,0 +1,18 @@
+id: delete-needs-confirmation
+title: A delete shows what it found and waits; "no" changes nothing
+description: >
+  alice has four saved reports, one of them about returns. The request must stop at the HITL Gate with a preview, and only the typed reply
+  decides. "no" cancels, and the report is still there.
+user: alice
+tags: [smoke, hitl]
+setup: [seed_reports]
+turns:
+  - say: Delete my reports about returns.
+    expect:
+      outcome: awaiting_confirmation
+      contains: ["Returns review for dresses"]
+      saved_reports: 4
+  - say: "no"
+    expect:
+      outcome: action_cancelled
+      saved_reports: 4

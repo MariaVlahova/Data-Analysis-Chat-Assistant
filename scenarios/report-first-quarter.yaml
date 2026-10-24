@@ -1,0 +1,23 @@
+id: report-first-quarter
+title: A report has the three sections and its figures come from the data
+description: >
+  The locked rules give a report exactly three sections, in order: Summary, Key insights, Action items. A report on several brands may state each
+  brand's figure and not their sum, so the figures checked are each of the user's brands' revenue in the quarter, computed from the data.
+user: alice
+tags: [report]
+turns:
+  - say: >
+      Write a report on the first quarter of 2025 for my brands, with insights and action items. Count revenue as the sale price of items
+      that were not cancelled or returned.
+    expect:
+      outcome: [answered, partial]
+      matches: ["summary", "key insights", "action items"]
+      numbers:
+        - label: revenue, Q1 2025
+          each_brand: true
+          sql: |
+            SELECT SUM(oi.sale_price) FROM order_items oi JOIN products p ON p.id = oi.product_id
+            WHERE p.brand = {brand} AND oi.status NOT IN ('Cancelled', 'Returned')
+              AND oi.created_at >= TIMESTAMP '2025-01-01' AND oi.created_at < TIMESTAMP '2025-04-01'
+    advisory:
+      matches: ["(?s)summary.*key insights.*action items"]

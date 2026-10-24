@@ -1,0 +1,25 @@
+id: delete-this-conversation
+title: '"Delete all the reports we made in this conversation" finds only this conversation''s reports'
+description: >
+  The brief's second example. alice has four reports from earlier conversations and saves one more here. The selector is conversation, so the
+  preview holds only the new report and asks for the light reply of one report, not `DELETE 5`. "no" cancels and all five stay.
+user: alice
+tags: [hitl]
+setup: [seed_reports]
+turns:
+  - say: What was our total revenue last month?
+    expect:
+      outcome: [answered, partial]
+  - say: Save this as a report.
+    expect:
+      outcome: action_done
+      saved_reports: 5
+  - say: Delete all the reports we made in this conversation.
+    expect:
+      outcome: awaiting_confirmation
+      not_contains: ["DELETE 5", "Returns review for dresses", "Monthly revenue by brand"]
+      saved_reports: 5
+  - say: "no"
+    expect:
+      outcome: action_cancelled
+      saved_reports: 5

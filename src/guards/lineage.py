@@ -58,6 +58,7 @@ class Analysis:
     aggregated: bool  # every outermost SELECT reduces its rows, and none collects customer attributes
     collects: bool  # a collecting aggregate (ARRAY_AGG ...) is built from a quasi-identifier column
     grouped_below: bool  # the outermost SELECTs only read derived tables, and one of those groups: the shape to rewrite
+    id_pinned: bool  # a comparison holds a customer ID to a fixed value: the query looks up one customer (rule R6)
     # per outermost SELECT: the (source alias, column, supplies demographic data) triples to count distinct customers in, or
     # None when they cannot be counted (a source with demographic data has no customer ID). One is COUNT; several are the
     # smallest of the counts.
@@ -314,8 +315,49 @@ def analyze(qualified: exp.Expression, allowlist: Allowlist) -> Analysis:
         aggregated=all(is_aggregated(b) for b in branches) and not collects,
         collects=collects,
         grouped_below=all(_grouped_below(b, lineage) for b in branches),
+        id_pinned=_pins_customer_id(qualified, lineage, ids),
         k_sources=tuple(_k_sources(b, lineage, ids, quasi) for b in branches),
     )
+
+
+# Comparisons that can hold a value to a constant, in any clause (WHERE, ON, HAVING, CASE WHEN, IF). `IS NULL` cannot.
+PINNING: tuple[type, ...] = tuple(
+    getattr(exp, name) for name in (
+        "EQ", "NEQ", "GT", "GTE", "LT", "LTE", "NullSafeEQ", "NullSafeNEQ", "Like", "ILike", "RegexpLike",
+    ) if hasattr(exp, name)
+)
+
+
+def _pins_customer_id(qualified: exp.Expression, lineage: _Lineage, ids: frozenset[BaseColumn]) -> bool:
+    """Rule R6: one side of a comparison is built from a customer ID, and the other side reads no base column at all (a
+    literal, arithmetic on literals, a CTE of literals) or is a scalar subquery. `WHERE user_id = 4242` or
+    `BETWEEN 100 AND 100` is a lookup of one customer, a group of one, whatever the output columns are. A join of two ID
+    columns and `user_id IN (SELECT ...)` over a segment are not pins."""
+
+    def has_id(side: exp.Expression | None) -> bool:
+        return side is not None and bool(lineage.sources_of(side, skip_counts=False) & ids)
+
+    def fixed(side: exp.Expression | None) -> bool:
+        if side is None:
+            return False
+        if isinstance(side, exp.Subquery):
+            return True  # `= (SELECT MIN(user_id) ...)`: one value, whatever it reads
+        return not lineage.sources_of(side, skip_counts=False)
+
+    for node in qualified.walk():
+        if isinstance(node, PINNING):
+            left, right = node.this, node.expression
+            if (has_id(left) and fixed(right)) or (has_id(right) and fixed(left)):
+                return True
+        elif isinstance(node, exp.Between):
+            if has_id(node.this) and fixed(node.args.get("low")) and fixed(node.args.get("high")):
+                return True
+        elif isinstance(node, exp.In):
+            listed = node.expressions
+            unnest = node.args.get("unnest")
+            if has_id(node.this) and ((listed and all(fixed(v) for v in listed)) or (unnest is not None and fixed(unnest))):
+                return True
+    return False
 
 
 def _group_keys(select: exp.Select, group: exp.Group) -> set[str] | None:
