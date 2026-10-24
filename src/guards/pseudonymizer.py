@@ -11,6 +11,11 @@ This object is the one place that knows which real customers appeared. So it fol
 - it never keeps a real ID: the lookup key is a keyed hash with a salt that exists only in this object;
 - a restart gives new labels, so "tell me more about Customer #48213" cannot be resolved afterwards, and the model
   never had the real ID to write that SQL with. The prototype says so honestly.
+
+A conversation outlives the process (the checkpoint is on disk, plan 08), so it may have shown labels that this object never
+issued. The graph keeps the numbers of the labels each answer showed (`labels_in`, in state as `shown_labels`) and `retire_labels`
+takes them as handed out: a query with such a number is refused like any other label, and no customer is given the same label
+again. A label is only a random number, so keeping it in a checkpoint keeps nothing real.
 """
 from __future__ import annotations
 
@@ -21,7 +26,7 @@ import re
 import secrets
 import threading
 from decimal import Decimal
-from typing import Any
+from typing import Any, Iterable
 
 from src.scalars import plain
 
@@ -31,9 +36,16 @@ FIRST_DIGITS = 5  # `Customer #48213`
 # still scanned. Seven digits hold about 10 million customers, far more than a session sees: past that we stop, not widen.
 MAX_DIGITS = 7
 LABEL_IN_TEXT = re.compile(rf"customer\s*#\s*\d{{{FIRST_DIGITS},{MAX_DIGITS}}}(?!\d)", re.IGNORECASE)  # "Customer #48213", as a person might type it
+_LABEL_DIGITS = re.compile(rf"customer\s*#\s*(\d{{{FIRST_DIGITS},{MAX_DIGITS}}})(?!\d)", re.IGNORECASE)
+_LABEL_NUMBER = re.compile(rf"\d{{{FIRST_DIGITS},{MAX_DIGITS}}}")
 # A whole number in a query: not the end of a name (`col48213`), not the decimals of another number (`1.48213`, `48213.5`).
 _DIGIT_RUN = re.compile(rf"(?<![\w.])\d{{{FIRST_DIGITS},{MAX_DIGITS}}}(?![\w]|\.\d)")
 _FULL_AT = 0.5  # a space that is half used gets one more digit, so a draw never has to search long
+
+
+def labels_in(text: str) -> list[str]:
+    """The numbers of the labels written in `text` ("Customer #48213" gives "48213"), in order, without repeats."""
+    return list(dict.fromkeys(_LABEL_DIGITS.findall(text)))
 
 
 def _identity(real_id: Any) -> str:
@@ -78,6 +90,15 @@ class SessionPseudonymizer:
                 label = self._draw()
                 self._labels[key] = label
             return label
+
+    def retire_labels(self, numbers: Iterable[str]) -> int:
+        """Count the labels with these numbers (shown by an earlier process) as handed out, so `refers_to` knows them and `_draw`
+        never issues them. Returns how many were new. Anything that is not a label's number is ignored."""
+        found = {f"{LABEL_PREFIX}{digits}" for digits in numbers if isinstance(digits, str) and _LABEL_NUMBER.fullmatch(digits)}
+        with self._lock:
+            fresh = found - self._taken
+            self._taken |= fresh
+            return len(fresh)
 
     def refers_to(self, text: str) -> bool:
         """True when `text` names a label this session handed out, as `Customer #48213` or as the bare number 48213.

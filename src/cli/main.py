@@ -10,7 +10,7 @@ import logging
 import sys
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, Any, Callable, Optional
 
 import typer
 
@@ -28,6 +28,8 @@ from src.personas import PersonaStore
 from src.storage.db import Database
 
 log = logging.getLogger("src.cli.main")  # not __name__: under `python -m` that is "__main__", outside the `src` logger
+
+PENDING_SEARCH = 20  # how many of the user's recent conversations are looked at for one that is waiting for a confirmation
 
 STARTUP_CRASH_MESSAGE = (
     "Something went wrong and the chat had to close. Please start it again. "
@@ -104,9 +106,11 @@ def open_session(
         ) from None
 
     db = Database.from_settings(settings)
+    checkpointer = None
     try:
         # Cheap local checks first, so a mistake in them is not reported after a wait on the network.
         db.migrate()
+        _housekeeping("the purge of deleted reports", lambda: _purge_deleted_reports(settings))
         personas, persona_name = _open_personas(settings)
         allowlist = load_allowlist(settings)  # plan 05: no valid allow-list, no column the agent may use
         if not allowlist.reviewed_against_live:
@@ -134,6 +138,7 @@ def open_session(
         # `doctor` never pay for them. The check is the last step before the conversation is created, so a failure
         # leaves no conversation behind.
         with renderer.progress("Checking the data connection..."):  # the imports are part of the wait
+            from src.agent.checkpointer import open_checkpointer, waiting_conversations
             from src.agent.runtime import build_agent
             from src.data_access.brand_check import check_brand_mapping
             from src.data_access.catalog import load_catalog
@@ -149,16 +154,31 @@ def open_session(
         check_brand_mapping(directory, catalog, only_user=user.user_id, suggest_names=False)
         # The agent (plan 07): gateway, runner, the three guards, the tools and the graph. Built before the conversation is
         # created, so a failure here (an sqlglot the guard was not checked against, for one) leaves no conversation behind.
+        # The checkpoints are on disk (plan 08): a confirmation that was waiting when the last chat ended is waiting still.
+        checkpointer = open_checkpointer(settings)
+        _housekeeping("the purge of old checkpoints", lambda: _purge_old_checkpoints(settings, checkpointer))
         agent = build_agent(
             settings, user=user, catalog=catalog, allowlist=allowlist, personas=personas, persona_name=persona_name,
-            chaos=chaos_engine,
+            chaos=chaos_engine, checkpointer=checkpointer,
         )
 
+        if existing is None and not conversation:
+            # No conversation was asked for: carry on with one that is waiting for the user's yes or no, if there is one. It is the
+            # most recently active of them, whichever conversation was used since. The search is a convenience: if it fails, the
+            # chat starts a new conversation, and the waiting one is still there for `--conversation`.
+            waiting = _find_waiting_conversation(db, agent, checkpointer, user.user_id, waiting_conversations)
+            if waiting is not None:
+                existing, conversation = waiting, waiting["id"]
         if existing is not None:
             conversation_id, turn_count = conversation, existing["turn_count"]  # turn IDs carry on, never restart
         else:
             conversation_id, turn_count = db.create_conversation(user.user_id), 0
+        tracer = Tracer.from_settings(settings, debug_prompts=debug_prompts)  # inside the try: if it fails, what is open is closed
     except BaseException:
+        if checkpointer is not None:
+            from src.agent.checkpointer import close_checkpointer
+
+            close_checkpointer(checkpointer)
         db.close()
         raise
 
@@ -175,10 +195,55 @@ def open_session(
         chaos_engine=chaos_engine,
         personas=personas,
         persona_name=persona_name,
-        tracer=Tracer.from_settings(settings, debug_prompts=debug_prompts),
+        tracer=tracer,
         catalog=catalog,
         agent=agent,
+        checkpointer=checkpointer,
     )
+
+
+def _find_waiting_conversation(db: Database, agent: Any, checkpointer: Any, user_id: str, candidates: Callable[..., list[str]]) -> Any:
+    """The user's most recently active conversation that is waiting at the HITL Gate, as its `conversations` row, or None. A
+    checkpoint that cannot be read is skipped (and logged): one bad conversation must not stop the chat."""
+    try:
+        ids = candidates(checkpointer, user_id, PENDING_SEARCH)
+    except Exception as exc:  # noqa: BLE001 - optional, see above
+        log.error("could not look for a conversation waiting for a confirmation: %s", crash_summary(exc))
+        return None
+    for conversation_id in ids:
+        try:
+            if agent.pending_confirmation(conversation_id) is not None:
+                return db.get_conversation(conversation_id, user_id)
+        except Exception as exc:  # noqa: BLE001 - see above
+            log.error("could not read the checkpoint of a conversation: %s", crash_summary(exc))
+    return None
+
+
+def _housekeeping(what: str, action: Callable[[], None]) -> None:
+    """Startup cleanup is optional: if it fails (the database is busy, a trigger refuses a row), the chat still starts, and the
+    next start tries again. The log gets where it failed, never the exception text."""
+    try:
+        action()
+    except Exception as exc:  # noqa: BLE001 - nothing here may stop the chat
+        log.error("startup cleanup failed (%s): %s", what, crash_summary(exc))
+
+
+def _purge_deleted_reports(settings: Settings) -> None:
+    """Reports deleted more than `delete.undo_days` ago are removed for good (F25)."""
+    from src.reports.store import purge_expired
+
+    removed = purge_expired(settings.db_path, undo_days=settings.delete.undo_days)
+    if removed:
+        log.info("removed %d deleted report(s) past their undo window", removed)
+
+
+def _purge_old_checkpoints(settings: Settings, checkpointer: Any) -> None:
+    """The checkpoints of conversations idle for more than `retention.checkpoint_days` (NFR21, 90 by default)."""
+    from src.agent.checkpointer import purge_old_checkpoints
+
+    removed = purge_old_checkpoints(checkpointer, settings.retention.checkpoint_days)
+    if removed:
+        log.info("deleted the checkpoints of %d conversation(s) idle for more than %d days", removed, settings.retention.checkpoint_days)
 
 
 def _open_personas(settings: Settings) -> tuple[PersonaStore | None, str | None]:
@@ -201,6 +266,22 @@ def banner(session: ChatSession) -> str:
                  f"calls, queries and the SQL the model writes, to show how the agent copes. "
                  f"Replay a run with --chaos {session.chaos} --chaos-seed {session.chaos_seed}.")
     return text
+
+
+def show_pending_confirmation(session: ChatSession) -> None:
+    """A conversation that stopped at the HITL Gate (possibly in an earlier chat) shows its preview again. The next typed line is
+    the reply, exactly as if the chat had never closed. `/new` drops it."""
+    if session.agent is None:
+        return
+    try:
+        pending = session.agent.pending_confirmation(session.conversation_id)
+    except Exception as exc:  # noqa: BLE001 - the chat starts; a turn in this conversation reports a checkpoint it cannot read
+        log.error("could not read the checkpoint of this conversation: %s", crash_summary(exc))
+        return
+    if pending:
+        session.renderer.info("This conversation is waiting for your confirmation. Nothing has been changed yet.")
+        session.renderer.answer(pending)
+        session.renderer.info("Type your reply, or /new to cancel it and start fresh.")
 
 
 def chat_loop(session: ChatSession, turn_fn: TurnFn | None = None) -> None:
@@ -241,6 +322,7 @@ def chat(
             debug_prompts=debug_prompts,
         )
         renderer.banner(banner(session))
+        show_pending_confirmation(session)
         chat_loop(session)
     except ConfigError as exc:
         renderer.startup_problem(exc.message, exc.fix)
@@ -255,7 +337,7 @@ def chat(
         raise typer.Exit(1) from None
     finally:
         if session is not None:
-            session.db.close()
+            session.close()
         shutdown_logging()
 
 

@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from src.errors import ErrorKind
-from src.guards.pseudonymizer import LABEL_IN_TEXT, SessionPseudonymizer
+from src.guards.pseudonymizer import LABEL_IN_TEXT, SessionPseudonymizer, labels_in
 from src.llm.routing import Step
 from tests.agent_support import REVENUE_SQL, composer_reply, guard_reply, make_rig, sql_reply
 
@@ -104,3 +104,34 @@ def test_a_label_in_a_request_for_a_saved_report_is_not_a_data_question(rig):
     """A tool turn names reports, not customers: the text of a title may hold anything the user saved."""
     rig.gateway.queue(Step.INPUT_GUARD, guard_reply("list_reports", standalone="List reports about Customer #48213"))
     assert rig.ask("list reports about Customer #48213").outcome == "action_done"
+
+
+# labels an earlier process showed (the conversation is saved on disk, plan 08) ----------------------------------------------------------------------
+
+def test_the_numbers_of_the_labels_in_a_text_are_found_once_each_in_order():
+    assert labels_in("Customer #48213 spent 500, then customer#1234567 and CUSTOMER # 77001, and Customer #48213 again") == ["48213", "1234567", "77001"]
+
+
+@pytest.mark.parametrize("text", ["customer 48213", "Customer #4821", "Customer #12345678", "our customers rank 48213", ""])
+def test_text_that_is_not_a_label_has_no_number(text):
+    assert labels_in(text) == []
+
+
+def test_labels_that_were_shown_are_taken_as_handed_out():
+    pseudonymizer = SessionPseudonymizer(seed=1)
+    assert pseudonymizer.retire_labels(["48213", "1234567", "77001"]) == 3
+    assert pseudonymizer.refers_to("WHERE u.id = 48213") and pseudonymizer.refers_to("IN (1234567, 5)") and pseudonymizer.refers_to("= 77001")
+    assert pseudonymizer.retire_labels(["48213"]) == 0  # already known
+
+
+def test_what_is_not_a_label_number_is_ignored_when_retiring():
+    pseudonymizer = SessionPseudonymizer(seed=1)
+    assert pseudonymizer.retire_labels(["4821", "12345678", "abc", "48 213", "", None, 48213]) == 0  # type: ignore[list-item]
+    assert not pseudonymizer.refers_to("WHERE u.id = 48213")
+
+
+def test_a_label_taken_from_the_checkpoint_is_never_issued_to_another_customer():
+    digits = SessionPseudonymizer(seed=7).fake_id(1).removeprefix("Customer #")  # the first draw of this seed
+    pseudonymizer = SessionPseudonymizer(seed=7)
+    pseudonymizer.retire_labels([digits])
+    assert pseudonymizer.fake_id(1) != f"Customer #{digits}"

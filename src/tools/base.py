@@ -9,10 +9,12 @@ Two rules every tool follows (plan 07, CLAUDE.md):
   `ref` of a target (the real ID) stays in the node that holds it: never in graph state, a span or a log.
 - The owner is `ToolContext.user`, never an argument the model could have written.
 
-Plan 08 replaces `stub_reports.py` with the real store and keeps this interface unchanged.
+Plan 08 built the real tools on this interface (`saved_reports.py`) without changing it.
 """
 from __future__ import annotations
 
+import hashlib
+import re
 from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, Protocol
 
@@ -22,6 +24,7 @@ from src.textutil import squash
 RiskClass = Literal["read", "write", "destructive", "external-send"]
 GATED_RISKS = frozenset({"destructive", "external-send"})
 
+_KNOWN_PAST = {"delete": "deleted", "send": "sent"}  # the default verbs of the gated risk classes
 SELECTOR_KINDS = ("conversation", "text_match", "all", "last")
 MAX_SELECTOR_TEXT = 100  # the model's search text is cut here (plan 07)
 
@@ -42,6 +45,7 @@ class ToolManifest:
     finder: str | None = None  # a gated tool names the read tool that lists what it would change
     noun: str = "item"  # for the confirmation text: "report"
     verb: str = ""  # for the confirmation text: "delete". Empty means the usual verb of the risk class (`action_verb`)
+    past: str = ""  # the verb in the past tense, for "Nothing was deleted". Empty: the known verbs have theirs, any other says "changed"
 
     @property
     def gated(self) -> bool:
@@ -51,6 +55,19 @@ class ToolManifest:
     def action_verb(self) -> str:
         """The word the confirmation uses ("Delete this report?", "Type SEND 3 to confirm")."""
         return self.verb or ("send" if self.risk_class == "external-send" else "delete")
+
+    @property
+    def audit_verb(self) -> str:
+        """The verb as it appears in the names of audit rows (`<verb>_requested`): lower case letters and underscores, so "e-mail"
+        gives "e_mail". `ToolRegistry.validate` refuses a gated tool whose verb leaves nothing usable."""
+        return re.sub(r"[^a-z]+", "_", self.action_verb.lower()).strip("_")
+
+    @property
+    def action_past(self) -> str:
+        """The past tense of the verb for what is said when the user cancels ("Nothing was deleted"), or "" when there is no sure
+        one. English has too many exceptions (drop, submit, notify) to build it by rule, so a tool with its own verb names it in
+        `past`, and the cancel text falls back to the plain "changed"."""
+        return self.past or _KNOWN_PAST.get(self.action_verb, "")
 
 
 @dataclass(frozen=True)
@@ -92,6 +109,12 @@ class Tool(Protocol):
     manifest: ToolManifest
 
     def run(self, args: Mapping[str, Any], ctx: ToolContext) -> ToolResult: ...
+
+
+def idempotency_key(*parts: str) -> str:
+    """The key of one request: SHA-256 of the parts joined with `|`. The graph builds the key of a write or gated tool with it, and
+    `reports/idempotency.py` builds the same keys for a caller that has none, so there is one recipe."""
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
 def clean_selector(raw: Any) -> dict[str, str | None] | None:

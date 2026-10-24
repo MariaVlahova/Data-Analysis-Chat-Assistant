@@ -5,6 +5,7 @@ intents it handles. The Input Guard reads `intents()` to know what it may answer
 """
 from __future__ import annotations
 
+import re
 from typing import Iterable
 
 from src.errors import ConfigError
@@ -40,6 +41,8 @@ class ToolRegistry:
                 if intent in reserved:
                     raise ConfigError(f"The tool {manifest.name} claims the intent {intent}, which the Input Guard already uses.")
             if manifest.gated:
+                if not re.fullmatch(r"[a-z][a-z_]{0,24}", manifest.audit_verb):
+                    raise ConfigError(f"The verb {manifest.action_verb!r} of the tool {manifest.name} cannot name audit rows (letters, at most 25).")
                 finder = self._tools.get(manifest.finder or "")
                 if finder is None or finder.manifest.risk_class != "read":
                     raise ConfigError(f"The tool {manifest.name} needs a registered read tool as its finder.")

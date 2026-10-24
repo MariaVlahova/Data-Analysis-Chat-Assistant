@@ -55,7 +55,7 @@ def test_an_unconfirmed_delete_changes_nothing_and_the_chat_goes_on(project, con
     scripted_gateway.queue(Step.INPUT_GUARD, guard_reply("list_reports"))
     result = chat(config_path, "alice", "revenue by brand\nsave that\ndelete all my reports\nyes\nlist my reports\n/quit\n")
     assert result.exit_code == 0, result.output
-    assert "Type DELETE 1 to confirm." in result.output and "Cancelled. Nothing was changed." in result.output
+    assert "Type DELETE 1 to confirm." in result.output and "Cancelled. Nothing was deleted." in result.output
     assert "You have 1 saved report:" in result.output  # the "yes" did not confirm a level 3 delete
     assert [row["outcome"] for row in runs(project)][-3:] == ["answered", "action_cancelled", "action_done"]
 

@@ -79,3 +79,23 @@ def scripted_gateway(monkeypatch: pytest.MonkeyPatch):
     gateway = FakeGateway()
     monkeypatch.setattr("src.llm.gateway.LLMGateway", lambda settings, **kwargs: gateway)
     return gateway
+
+
+@pytest.fixture
+def reports(project: Path, fake_bigquery: FakeClient):
+    """The graph with the real Saved Reports tools on a migrated SQLite file (plan 08). The checkpoints are in memory."""
+    from tests.reports_support import ReportsEnv
+
+    env = ReportsEnv(project, fake_bigquery)
+    yield env
+    env.close()
+
+
+@pytest.fixture
+def durable(project: Path, fake_bigquery: FakeClient):
+    """The same, with LangGraph's `SqliteSaver` on the same file, so `restart()` finds a conversation where it stopped."""
+    from tests.reports_support import ReportsEnv
+
+    env = ReportsEnv(project, fake_bigquery, checkpoints=True)
+    yield env
+    env.close()

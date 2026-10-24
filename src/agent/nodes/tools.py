@@ -19,11 +19,14 @@ names a tool: the router asks the registry which tool handles the intent, so a n
 
 Only the user's typed reply confirms. Nothing a model wrote can: the reply exists in state only because `hitl_gate` put the
 resume value there, and the resume value comes from the CLI's input line.
+
+Every step of a gated action goes to the audit log through `deps.audit` (plan 08, F26): requested, confirmed, cancelled, stale.
+A row has the user hash, a count and the ID-set hash, never a title. The effect's own row is written by the tool, in the
+transaction of the effect. An audit write that fails stops the step before anything is changed.
 """
 from __future__ import annotations
 
 import contextvars
-import hashlib
 import threading
 from dataclasses import replace
 from typing import Any, Mapping
@@ -38,11 +41,11 @@ from src.agent.nodes.policy import current_user
 from src.agent.state import PendingAction, TurnState, with_error
 from src.errors import AgentError, ErrorKind, crash_summary, default_message
 from src.observability import event, guard_decision, span, turn_metrics
-from src.tools.base import LastAnswer, Tool, ToolContext, ToolManifest, ToolResult
+from src.storage.audit import AuditEntry
+from src.tools.base import LastAnswer, Tool, ToolContext, ToolManifest, ToolResult, idempotency_key
 from src.tools.confirmation import confirmation_for, id_set_hash, preview_text, reply_confirms
 
 ROLE_REFUSAL = "Your role cannot do that."
-CANCELLED = "Cancelled. Nothing was changed."
 READ_TIMEOUT = "That took too long to look up. Nothing was changed. Please try again."  # a read tool changed nothing, so this can say so
 
 
@@ -53,6 +56,11 @@ def clarify_text(manifest: ToolManifest) -> str:
         f"Which {noun}s do you mean? For example: \"{verb} the {noun}s from this conversation\", "
         f"\"{verb} {noun}s mentioning Client X\", \"{verb} my last {noun}\" or \"{verb} all my {noun}s\"."
     )
+
+
+def cancelled_text(manifest: ToolManifest) -> str:
+    """"Cancelled. Nothing was deleted." The past tense is the manifest's own; a tool that does not name one gets "changed"."""
+    return f"Cancelled. Nothing was {manifest.action_past or 'changed'}."
 
 
 def no_match_text(manifest: ToolManifest) -> str:
@@ -79,8 +87,21 @@ def _tool(deps: Deps, state: TurnState) -> Tool:
     return tool
 
 
-def _key(*parts: str) -> str:
-    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+def _audit(
+    deps: Deps, ctx: ToolContext, manifest: ToolManifest, step: str, outcome: str, *,
+    target_hash: str | None = None, count: int | None = None, key: str | None = None, detail: str | None = None,
+) -> None:
+    """One audit row for a step of a gated action: `delete_requested`, `delete_confirmed`, ... The verb comes from the manifest.
+
+    A row that cannot be written is TOOL_FAILED, before anything is changed: no action goes on without a record."""
+    entry = AuditEntry(
+        f"{manifest.audit_verb}_{step}", ctx.user.user_hash, outcome, target_hash=target_hash, count=count,
+        trace_id=ctx.trace_id, turn_id=ctx.turn_id, idempotency_key=key, detail=detail,
+    )
+    try:
+        deps.audit(entry)
+    except Exception as exc:  # noqa: BLE001 - whatever stops the record stops the step
+        raise AgentError(ErrorKind.TOOL_FAILED, detail=f"audit write failed: {crash_summary(exc)}") from None
 
 
 def _role_refusal(user: UserContext, manifest: ToolManifest) -> AgentError | None:
@@ -172,10 +193,12 @@ def make_prepare_action(deps: Deps):
         if not manifest.gated:
             return {}  # a read or a write: no confirmation, straight to the tool
         pending: PendingAction = dict(state["pending_action"])  # type: ignore[assignment]
-        found = _find(deps, tool, pending["args"], _context(deps, state))
+        ctx = _context(deps, state)
+        found = _find(deps, tool, pending["args"], ctx)
         if not found.targets:
             # Nothing matched. The finder's message is a tool's text (it may hold stored titles), so it goes through the Output Guard
             # like every tool message: held here, and the graph goes to `output_guard`, not straight to `finish`.
+            _audit(deps, ctx, manifest, "requested", "no_match", count=0)
             deps.runtime(state).hold(FINAL_TEXT, found.message or no_match_text(manifest))
             return {"outcome": "answered", "pending_action": None}
         refs = [target.ref for target in found.targets]  # held in this function only
@@ -187,6 +210,7 @@ def make_prepare_action(deps: Deps):
             "id_set_hash": id_set_hash(refs, deps.hash_key), "count": len(refs), "level": level.level, "preview": preview,
             "prompt": level.prompt, "expected_reply": level.expected, "note": None,
         })
+        _audit(deps, ctx, manifest, "requested", "ok", target_hash=pending["id_set_hash"], count=len(refs))
         event("hitl.requested", level=level.level, count=len(refs), id_set_hash=pending["id_set_hash"][:12])
         return {"pending_action": pending}
 
@@ -227,13 +251,16 @@ def make_execute_action(deps: Deps):
         if manifest.gated:
             if not reply_confirms(pending["level"], pending["expected_reply"], state.get("reply")):
                 guard_decision("hitl", "block", rule="NOT_CONFIRMED")
+                _audit(deps, ctx, manifest, "cancelled", "cancelled", target_hash=pending["id_set_hash"], count=pending["count"])
                 event("hitl.denied", level=pending["level"], count=pending["count"])
-                runtime.hold(FINAL_TEXT, CANCELLED)
+                runtime.hold(FINAL_TEXT, cancelled_text(manifest))
                 return {**done, "outcome": "action_cancelled"}
             found = _find(deps, tool, args, ctx)
             refs = [target.ref for target in found.targets]
             if id_set_hash(refs, deps.hash_key) != pending["id_set_hash"]:  # the set changed after the preview (F24)
                 guard_decision("hitl", "block", rule=ErrorKind.STALE_CONFIRMATION.value)
+                _audit(deps, ctx, manifest, "stale", "stale", target_hash=pending["id_set_hash"], count=pending["count"],
+                       detail=f"{len(refs)} found now")
                 if not found.targets:
                     runtime.hold(FINAL_TEXT, stale_and_gone_text(manifest))
                     return {**done, "outcome": "action_cancelled"}
@@ -245,14 +272,18 @@ def make_execute_action(deps: Deps):
                     "expected_reply": level.expected, "note": default_message(ErrorKind.STALE_CONFIRMATION),
                 }
                 deps.output_guard.check(fresh["preview"])
+                # The new preview is a request in its own right: the rows that follow (confirmed, executed) carry its hash.
+                _audit(deps, ctx, manifest, "requested", "ok", target_hash=fresh["id_set_hash"], count=len(refs),
+                       detail="new preview after a stale confirmation")
                 return {"pending_action": fresh, "reply": None, "restart_gate": True}
             guard_decision("hitl", "pass", rule="CONFIRMED")
             event("hitl.approved", level=pending["level"], count=pending["count"], id_set_hash=pending["id_set_hash"][:12])
             args["ids"] = refs  # the IDs the node just found, passed to the tool and nowhere else
             # The same key for the same request, whenever and however often the confirmation arrives (F27).
-            key: str | None = _key(state.get("conversation_id", ""), pending["request_turn_id"], manifest.name, pending["id_set_hash"])
+            key: str | None = idempotency_key(state.get("conversation_id", ""), pending["request_turn_id"], manifest.name, pending["id_set_hash"])
+            _audit(deps, ctx, manifest, "confirmed", "ok", target_hash=pending["id_set_hash"], count=pending["count"], key=key)
         else:
-            key = _key(state.get("conversation_id", ""), state.get("turn_id", ""), manifest.name) if manifest.risk_class == "write" else None
+            key = idempotency_key(state.get("conversation_id", ""), state.get("turn_id", ""), manifest.name) if manifest.risk_class == "write" else None
 
         result = _call(tool, args, replace(ctx, idempotency_key=key))
         runtime.hold(FINAL_TEXT, result.message)

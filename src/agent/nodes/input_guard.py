@@ -15,6 +15,7 @@ from typing import Literal, Sequence
 
 from pydantic import BaseModel, create_model
 
+from src import pii
 from src.agent.boundary import node
 from src.agent.deps import Deps
 from src.agent.prompts.locked_rules import BASE_INTENTS
@@ -82,6 +83,14 @@ def clean_input(text: str) -> str:
     return _STRIP.sub("", text.translate(_SEPARATORS).replace("\r\n", "\n").replace("\r", "\n")).strip()
 
 
+def typed_text(text: str) -> str:
+    """What the user typed, as it is stored and shown to a model: hidden characters removed, then masked (`pii.mask`).
+
+    The order matters. A zero-width character or a soft hyphen inside an address breaks the pattern, so masking first would miss it
+    and cleaning afterwards would put the plain address back."""
+    return pii.mask(clean_input(text))
+
+
 def make_input_guard(deps: Deps):
     schema = make_input_schema(deps.registry.intents())
     limit = deps.settings.guards.max_input_chars
@@ -89,7 +98,7 @@ def make_input_guard(deps: Deps):
     @node(deps, "input_guard", progress="Understanding your question...")
     def input_guard(state: TurnState) -> dict:
         runtime = deps.runtime(state)
-        question = clean_input(state.get("question", ""))
+        question = typed_text(state.get("question", ""))  # already so when it comes from `AgentRuntime.run`; masking twice changes nothing
         if not question or len(question) > limit:
             guard_decision("input", "block", rule="INPUT_REJECTED", chars=len(question))
             raise AgentError(ErrorKind.INPUT_REJECTED, detail=f"the message is {'empty' if not question else 'longer than ' + str(limit) + ' characters'}")
@@ -119,7 +128,7 @@ def make_input_guard(deps: Deps):
         tool_intent = deps.registry.for_intent(intent) is not None
         turn_kind = "tool" if tool_intent else _DATA_INTENTS.get(intent, "simple")
         update: dict = {"question": question, "intent": intent, "turn_kind": turn_kind, "selector": None, "refusal": None}
-        standalone = squash(out.standalone_question, limit)
+        standalone = squash(typed_text(out.standalone_question), limit)  # stored in the checkpoint: cleaned and masked first, then cut
 
         if out.injection_suspected:
             guard_decision("input", "block", rule="INJECTION_SUSPECTED")
