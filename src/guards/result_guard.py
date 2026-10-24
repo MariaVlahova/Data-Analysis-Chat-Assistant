@@ -283,6 +283,10 @@ class ResultGuard:
         self._timeout_s = timeout_s
         self._clock = clock
 
+    def references_session_label(self, text: str) -> bool:
+        """True when the text (a query) holds the number of a customer label this session has shown. The caller refuses it."""
+        return self._pseudonymizer.refers_to(text)
+
     # entry point ------------------------------------------------------------------------------------------------
 
     def apply(self, df: pd.DataFrame, gq: GuardedQuery, total_rows: int) -> GuardedResult:

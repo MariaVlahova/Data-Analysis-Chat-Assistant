@@ -8,6 +8,8 @@ from typer.testing import CliRunner
 from src.cli import main as cli_main
 from src.cli.main import app
 from src.errors import AgentError, ErrorKind
+from src.llm.routing import Step
+from tests.agent_support import composer_reply, echo_turn, guard_reply, sql_reply
 
 runner = CliRunner(env={"COLUMNS": "200"})  # wide terminal, so Rich never wraps a line inside an assertion
 
@@ -76,7 +78,7 @@ def test_user_without_brands_exits_2_and_never_starts_a_chat(project, config_pat
     result = chat(config_path, "nobrands", "what are my sales?\n/quit\n")
     assert result.exit_code == 2
     assert "No brands are assigned to this user" in result.output
-    assert "Echo only" not in result.output  # no turn ran
+    assert "How I read your question" not in result.output and "Something went wrong" not in result.output  # no turn ran
     assert not (project / "data" / "db.sqlite3").exists()  # nothing was created for them
 
 
@@ -100,23 +102,33 @@ def test_missing_config_exits_2(tmp_path):
     assert "not found" in result.output
 
 
-def test_a_turn_runs_and_prints_the_answer_once(config_path):
+def script_one_answer(gateway, body: str, standalone: str = "revenue by brand") -> None:
+    """The model replies of one simple question. The default fake dataset answers any `GROUP BY p.brand` query with
+    Nike 1,200 and Levi's 900 (tests/fake_bigquery.py)."""
+    gateway.queue(Step.INPUT_GUARD, guard_reply(standalone=standalone))
+    gateway.queue(Step.SQL_WRITE, sql_reply())
+    gateway.queue(Step.COMPOSER, composer_reply(body))
+
+
+def test_a_turn_runs_the_agent_and_prints_the_answer_once(config_path, scripted_gateway):
+    script_one_answer(scripted_gateway, "Nike sold 1,200 items and Levi's 900.")
     result = chat(config_path, "alice", "hello there\n/quit\n")
-    assert result.exit_code == 0
-    assert result.output.count("You asked: hello there") == 1
-    assert "t-1" in result.output and "scope: brands" in result.output
+    assert result.exit_code == 0, result.output
+    assert result.output.count("Nike sold 1,200 items") == 1
+    assert "How I read your question" in result.output and "Scope: your brands: Brand A, Brand B" in result.output
 
 
-def test_text_that_looks_like_markup_cannot_crash_the_screen(config_path):
+def test_text_that_looks_like_markup_cannot_crash_the_screen(config_path, scripted_gateway):
+    script_one_answer(scripted_gateway, "You asked about [/oops] [bold]x and Nike sold 1,200 items.", standalone="[/oops] [bold]x")
     result = chat(config_path, "alice", "[/oops] [bold]x\n/quit\n")
     assert result.exit_code == 0
-    assert "[/oops]" in result.output
+    assert "[/oops]" in result.output and "Something went wrong" not in result.output
 
 
 def test_empty_lines_are_ignored(config_path):
     result = chat(config_path, "alice", "\n   \n/quit\n")
     assert result.exit_code == 0
-    assert "Echo only" not in result.output
+    assert "How I read your question" not in result.output and "Something went wrong" not in result.output
 
 
 def test_an_exception_inside_a_turn_shows_a_friendly_message_and_the_loop_continues(project, config_path, monkeypatch):
@@ -184,7 +196,8 @@ def test_slash_help_and_unknown_slash_command_print_the_help(config_path):
         assert command in result.output
 
 
-def test_slash_new_starts_a_new_conversation_and_resets_the_turn_counter(project, config_path):
+def test_slash_new_starts_a_new_conversation_and_resets_the_turn_counter(project, config_path, monkeypatch):
+    monkeypatch.setattr(cli_main, "run_turn", echo_turn)
     result = chat(config_path, "alice", "one\n/new\ntwo\n/quit\n")
     assert result.exit_code == 0
     assert "Started a new conversation" in result.output
@@ -266,7 +279,7 @@ def test_a_broken_default_persona_is_a_startup_problem(persona_project):
     assert "default.yaml" in result.output
 
 
-def test_a_persona_file_broken_mid_chat_does_not_block_the_turn(persona_project, monkeypatch):
+def test_a_persona_file_broken_mid_chat_does_not_block_the_turn(persona_project, monkeypatch, scripted_gateway):
     real_run_turn = cli_main.run_turn
 
     def corrupt_then_answer(session, text, *, trace_id, progress):
@@ -275,16 +288,23 @@ def test_a_persona_file_broken_mid_chat_does_not_block_the_turn(persona_project,
         return real_run_turn(session, text, trace_id=trace_id, progress=progress)
 
     monkeypatch.setattr(cli_main, "run_turn", corrupt_then_answer)
+    script_one_answer(scripted_gateway, "Nike sold 1,200 items.")
+    script_one_answer(scripted_gateway, "Levi's sold 900 items.")
     result = chat(persona_project / "config.yaml", "alice", "break\nnext\n/quit\n")
     assert result.exit_code == 0
-    assert "Persona file problem, using no persona" in result.output
-    assert "You asked: next" in result.output  # carried on with defaults (decision 3.11)
+    assert "Nike sold 1,200 items" in result.output  # the file was broken before this turn ran: carried on without a persona
+    assert "Levi's sold 900 items" in result.output
     assert "Something went wrong" not in result.output
+    composer_calls = scripted_gateway.calls_for(Step.COMPOSER)
+    assert len(composer_calls) == 2 and all("Company persona" not in call.system for call in composer_calls)
+    log = (persona_project / "data" / "logs" / "app.log").read_text(encoding="utf-8")
+    assert "the persona is not available" in log
 
 
 # regressions from the code review --------------------------------------------------------------
 
-def test_turn_ids_carry_on_when_a_conversation_is_resumed(project, config_path):
+def test_turn_ids_carry_on_when_a_conversation_is_resumed(project, config_path, monkeypatch):
+    monkeypatch.setattr(cli_main, "run_turn", echo_turn)
     first = chat(config_path, "alice", "one\ntwo\n/quit\n")
     assert first.exit_code == 0 and "t-2" in first.output
     conv_id = conversations(project)[0]["id"]

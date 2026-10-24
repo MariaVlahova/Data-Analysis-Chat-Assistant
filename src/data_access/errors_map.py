@@ -21,6 +21,7 @@ from google.api_core import exceptions as api_exc
 from google.auth import exceptions as auth_exc
 
 from src.errors import AgentError, ErrorKind
+from src.textutil import squash
 
 # Where the call happens, because the same failure means different things:
 #   "metadata": a table-metadata call on the configured dataset. A 404 means bigquery.dataset is wrong.
@@ -68,7 +69,7 @@ def normalize_message(message: str) -> str:
     text = re.sub(r"https?://\S+", " ", text)
     text = re.sub(r'"[^"]*"', '"…"', text)
     text = re.sub(r"'[^']*'", "'…'", text)
-    return " ".join(text.split())
+    return squash(text)
 
 
 def _reason(exc: api_exc.GoogleAPICallError) -> str | None:

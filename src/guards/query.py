@@ -19,13 +19,19 @@ import hmac
 import json
 import secrets
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Sequence
 
 _KEY = secrets.token_bytes(32)  # never written anywhere; a new one per process
 
 # `GuardedQuery.scope_label` for a user who sees every brand. The SQL Guard writes it and the Result Guard compares with it
 # (plan 06, S15), so both use this one constant.
 ALL_BRANDS_LABEL = "all brands"
+
+
+def scope_label_for(mode: str, brands: Sequence[str]) -> str:
+    """The words for what a user may see: `all brands`, or `your brands: A, B`. The one place that writes them: the SQL Guard puts
+    them on every query, and the answer's scope line (`policy_context`) says the same."""
+    return ALL_BRANDS_LABEL if mode == "all" else "your brands: " + ", ".join(brands)
 
 
 @dataclass(frozen=True)

@@ -68,3 +68,14 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.fixture
 def config_path(project: Path) -> Path:
     return project / "config.yaml"
+
+
+@pytest.fixture
+def scripted_gateway(monkeypatch: pytest.MonkeyPatch):
+    """The chat's model gateway replaced by a `FakeGateway` the test scripts (plan 07). `open_session` builds its agent with
+    `LLMGateway`, so a CLI test can run the real graph, guards and query runner with no network."""
+    from src.llm.fake import FakeGateway
+
+    gateway = FakeGateway()
+    monkeypatch.setattr("src.llm.gateway.LLMGateway", lambda settings, **kwargs: gateway)
+    return gateway

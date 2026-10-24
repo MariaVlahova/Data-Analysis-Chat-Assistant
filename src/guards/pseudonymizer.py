@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import math
 import random
+import re
 import secrets
 import threading
 from decimal import Decimal
@@ -29,6 +30,9 @@ FIRST_DIGITS = 5  # `Customer #48213`
 # The Output Guard lets a label of this many digits through and nothing longer, so a long number after "Customer #" is
 # still scanned. Seven digits hold about 10 million customers, far more than a session sees: past that we stop, not widen.
 MAX_DIGITS = 7
+LABEL_IN_TEXT = re.compile(rf"customer\s*#\s*\d{{{FIRST_DIGITS},{MAX_DIGITS}}}(?!\d)", re.IGNORECASE)  # "Customer #48213", as a person might type it
+# A whole number in a query: not the end of a name (`col48213`), not the decimals of another number (`1.48213`, `48213.5`).
+_DIGIT_RUN = re.compile(rf"(?<![\w.])\d{{{FIRST_DIGITS},{MAX_DIGITS}}}(?![\w]|\.\d)")
 _FULL_AT = 0.5  # a space that is half used gets one more digit, so a draw never has to search long
 
 
@@ -74,6 +78,15 @@ class SessionPseudonymizer:
                 label = self._draw()
                 self._labels[key] = label
             return label
+
+    def refers_to(self, text: str) -> bool:
+        """True when `text` names a label this session handed out, as `Customer #48213` or as the bare number 48213.
+
+        A label is a random number in the range of real customer IDs, so a query that filters on it would return some other
+        customer. The model is told not to, and this is the check that does not rely on it.
+        """
+        with self._lock:
+            return any(f"{LABEL_PREFIX}{run}" in self._taken for run in _DIGIT_RUN.findall(text))
 
     @property
     def size(self) -> int:
