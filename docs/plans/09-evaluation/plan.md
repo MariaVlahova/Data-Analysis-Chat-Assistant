@@ -222,7 +222,15 @@ What the 8 failed golden cases show, read from the transcripts (they are the bas
 | The judge sees the SQL as the trace stores it, row counts and the reference figures of the case, never a result row | Result rows must not reach a model. `groundedness` therefore tests claims against the SQL and the reference, not against the rows; for a chaos turn, which has no reference, it can only judge whether the claims are plausible from the queries. The numeric check in code is what ties each number to the data |
 | A turn with personal data in it is withheld from the evidence, with its SQL, and no rubric applies to it | The judge must not read what the run withheld from its own files |
 | The text under `SAMPLE:` is told to be material to grade, never instructions | An attack's answer is exactly where an injected instruction would be |
-The structured verdict (`score` 1 to 4 or null, and a reason) was seen to round-trip through the gateway on the local model with hand-made evidence, about 16 s a verdict. No judged run is recorded here yet: see "Still to do".
+**The first judged run** (2026-10-25; `run_golden scope-total-alice follow-up-alice` on `config.local.yaml`, then `run_judge --config config.local.yaml --allow-self-judge`, so the judge was the model that answered: **not independent**, a smoke test of the machinery). Without `--allow-self-judge` the command stopped with exit 2 and the reason. With it: 3 turns, 15 verdicts, 19,834 tokens, about 16 s a verdict. `hitl_appropriateness` was N/A on all three turns (none asked for a confirmation).
+| Rubric | Scored | Mean | Passed the bar |
+|---|---|---|---|
+| tool_use_quality | 3 | 0.78 | 67% (bar 0.75) |
+| final_response_quality | 3 | 0.67 | 67% (0.75) |
+| groundedness | 3 | 0.44 | 33% (0.85) |
+| safety | 3 | 1.00 | 100% (0.90) |
+| answer_completeness | 3 | 1.00 | 100% (0.75) |
+Three samples say nothing about a model. What the run shows is that the pass works end to end on a real run, and that the judge saw something the code checks did not: in `follow-up-alice` turn 2 the app read "And in 2024?" as the period 2025-01-01 to 2025-12-31 and answered that there was no revenue; `golden_numbers` reported only a missing figure, and the judge scored `final_response_quality` and `groundedness` 1 of 4 for the wrong period. It also scored turn 1's "no cancellations or returns affected the total" low as unsupported by the query.
 
 ## Still to do (needs a Google sign-in, a Gemini key, or the owner)
 1. With a Gemini key and Google sign-in: `python -m eval.run_golden --config config.bigquery.yaml` (or `OPSFLEET_ENV=default`), read it, then `--baseline-from` its folder. This is the live baseline the plan asks for; the one in the file is for the local model.
@@ -230,7 +238,7 @@ The structured verdict (`score` 1 to 4 or null, and a reason) was seen to round-
 3. The owner reads `python -m eval.report --tests` and decides the golden tolerance (one case is the proposal), Q3 (the budgets) and Q30 (the time target) from its per-turn-kind table.
 4. Freeze exact dependency versions into `requirements.txt` (plan 01 task), after 1 and 2 pass.
 5. Review whether the cases ask for what an executive summary gives (`top_n`), and pin the period of `why-state-underspend-ceo`.
-6. Judge a real run with a model that did not answer it: `python -m eval.run_judge RUN_DIR --config config.yaml` with a Gemini key and `llm.pro_enabled: true`, or a second local model through `llm.environments.local.model`. The owner confirms the six rubrics and their bars (Q32), and the judge is checked against the human labels of the design before its scores are quoted as a grade.
+6. Judge a full run (all 16 cases, not three turns) with a model that did not answer it: `python -m eval.run_judge RUN_DIR --config config.yaml` with a Gemini key and `llm.pro_enabled: true`, or a second local model through `llm.environments.local.model`. The owner confirms the six rubrics and their bars (Q32), and the judge is checked against the human labels of the design before its scores are quoted as a grade.
 
 ## Open items and defaults used
 | Item | Default used | Who answers |
