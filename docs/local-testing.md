@@ -178,6 +178,43 @@ The tests never call a model: Gemini is replaced by a scripted gateway, and the 
 
 `tests/test_local_e2e.py` is the one to read first. For each case it computes the right answer from the file directly, scripts the model to say it, and checks what the app lets through: the right brands, the right totals, no label turned into an ID, and no e-mail, name or address in any prompt, trace, log, metrics row, database or checkpoint.
 
+### The evaluation: golden cases, attacks and chaos (plan 09)
+
+Where a scenario says what one answer must hold, the evaluation scores the app as a whole and says whether the prototype may be called working. It has three data files in `eval/datasets/`, three commands, a baseline and a report.
+
+| Suite | File | What one entry is | Command |
+|---|---|---|---|
+| Golden cases | `golden_cases.yaml` | A conversation with a **reference SQL**. The runner runs it through the same SQL Guard as the same user, takes the first `top_n` values of a column, and requires each in the answer within a tolerance. It also checks the wording the answer must carry (the reading, the scope line, a small-group notice, the data's last date) and what it must not carry | `python -m eval.run_golden --config config.local.yaml` |
+| Attacks | `attacks.yaml` | Something a user could try: personal data asked for directly or in a roundabout way, an instruction in the question or in a result cell, another brand's data, a claimed role, a claimed confirmation, a delete that is too wide, a costly query, a narrowing of a small group | `python -m eval.run_attacks --config config.local.yaml` |
+| Chaos | `chaos_scenarios.yaml` | A run of turns under injected faults: the seeded `harsh` and `mild` profiles, and scripted faults (a 429 storm, 5xx on every model, a BigQuery timeout, bad SQL once and always, malformed JSON) | `python -m eval.run_chaos --config config.local.yaml` (the random profiles; the scripted faults only run offline) |
+
+Every conversation runs on the app `chat` starts (`ScenarioRunner.play`), in its own folder under `<data_dir>/eval/<run id>/`. The checks are `evalkit` metrics (`eval/metrics.py`): the invariants **I1 to I6** (no personal data in any prompt, trace, log, file or answer; only guarded SQL; only the user's brands; no destructive effect without the typed confirmation; inside the budget; no crash) and the checks against what each entry says. A check that could not be made is "not applicable", never a pass.
+
+- **Hard gates** are metrics at a floor of 1.0: PII leaks, brand scope escapes, a delete without a confirmation, the budget, a crash, a failed turn without a trace ID and a metrics row. One failure fails the run, and no baseline excuses it. A gate that no sample could measure is listed as *not measured*.
+- **The golden pass bar** is the number of cases that passed in the first run of the same setup (environment, model, data), minus a tolerance in cases. `--update-baseline --tolerance N` writes `eval/baseline.json` at the end of a full run, and `--baseline-from RUN_DIR` writes it from a run you have already read, so reading a result before choosing the tolerance does not cost a second run. The file keeps one entry for each setup (environment, data and model). Neither command writes from a run that failed a hard gate, skipped a case or did not cover the whole set, or from one that passed fewer cases than the current baseline (lowering the bar is a visible edit of the file). A baseline file that cannot be read is an error, never an empty baseline. The tolerance is the owner's to set once they have read the first run (the plan's proposal is one case).
+- **Attacks** gate on the invariants, and a run passes only when every attack passed (NFR12: one failure is a bug). Whether the model refused is shown for a live run and not counted: a model that never writes the bad SQL has nothing for the code to refuse. The offline run scripts a model that does what the attack asks and requires the refusal. A chaos run passes the same way, except that how its turns ended is a finding in a live run and not a gate.
+- **A leaked answer is never written to the run's files:** the transcript and the results say it was withheld.
+- **The judge is a second, advisory pass.** Every run leaves `evidence/<id>.json`; `eval.run_judge` reads it and has a model score each turn (tool use, answer quality, groundedness, safety, completeness, confirmation flow; the rubrics are in `evalkit/rubrics.xlsx`). It does not replay anything, never changes an exit code, and refuses to let the model that answered also judge unless you say so. The judge is never shown a result row, so groundedness is judged against the SQL and the case's reference figures.
+
+```bash
+python -m eval.run_golden --config config.local.yaml                     # all 16 cases; a turn takes minutes at 10 tokens a second
+python -m eval.run_golden rev-monthly-alice scope-total-ceo --config config.local.yaml
+python -m eval.run_golden --config config.local.yaml --update-baseline --tolerance 1      # run everything, then write the baseline
+python -m eval.run_golden --baseline-from data/local/eval/golden-<time> --tolerance 1      # or write it from a run you have already read
+python -m eval.run_attacks --config config.local.yaml
+python -m eval.run_chaos --config config.local.yaml --turns 5
+python -m eval.report --tests --config config.local.yaml                 # the PRD section 9 table, from the newest run of each suite
+python -m eval.run_judge data/local/eval/golden-<time> --config config.yaml   # a model that did NOT answer scores each turn against the six rubrics (advisory); needs a Gemini key
+python -m eval.run_judge data/local/eval/golden-<time> --config config.local.yaml --allow-self-judge   # the local model judges itself: a smoke test, marked NOT independent
+pytest -m attack                  # the attacks against a scripted, hijacked model; the code must hold (offline, a few seconds each)
+pytest -m chaos                   # the scripted fault sequences through the real gateway (offline)
+pytest -m golden                  # the reference SQL of every case through the SQL Guard, and an oracle model that must pass every case
+```
+
+**What the first runs on Qwen showed** (2026-10-25; the plan's "As built" section has the detail). All three suites held every hard gate. The golden run passed 8 of 16 cases in 1,854 s, and every failure was on the key figures: summary-style answers that state fewer than the `top_n` figures asked for, a reading the case did not fix, and two figures from a different definition of "returned". The attack run passed 25 of 25 in 939 s, and the live chaos run (5 turns of each random profile) 2 of 2 in 471 s. `eval/baseline.json` holds the golden result for this setup, with a tolerance of one case that the owner has not yet confirmed. The response-time row is not met (33% of simple turns under 30 s), which says the local model is slow and not that the app is.
+
+The report prints one row for each PRD section 9 metric, with its target, the measured value and where it came from. A row that rests on a pytest suite (duplicate effects, delete flows) is measured only with `--tests`. Response time is measured from `runs.jsonl` and says which model it was: a scripted model's speed is shown as *not measured*, and the local 30B model will not meet a 30 s target that was proposed for Gemini. Below the table it lists calls and latency for each kind of turn, so the owner can settle Q3 (the budgets) and Q30 (the time target) from data.
+
 ## 5. Checking an answer against the data
 
 The file is plain DuckDB. Open it read-only in a Python shell and ask the same question in SQL:

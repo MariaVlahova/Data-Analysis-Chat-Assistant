@@ -128,10 +128,25 @@ and how to test the BigQuery part on real BigQuery: `config.bigquery.yaml` runs 
 ## Tests
 
 ```bash
-python -m pytest
+python -m pytest                       # everything offline: no network, no keys
+python -m pytest -m attack             # PII, brand scope and confirmation attacks against the real graph (a scripted, hijacked model)
+python -m pytest -m chaos              # injected faults: the chat never crashes (the real gateway over a fake SDK client)
+python -m pytest -m golden             # the golden cases' reference SQL and the scoring machinery
+python -m pytest -m live               # real BigQuery (and later Gemini); manual, skips without credentials
 ```
 
 Tests use temporary folders and never read the real `users.yaml` or write to `data/`.
+
+The evaluation (plan 09) scores the app itself: the golden cases against reference SQL, the attacks, and the chaos runs, with the model and data of the
+config. Each command writes a run folder under `<data_dir>/eval/` and exits 1 when a hard gate or the baseline bar fails.
+
+```bash
+python -m eval.run_golden  --config config.local.yaml   # 16 cases; --update-baseline (or --baseline-from RUN_DIR) writes eval/baseline.json for this setup
+python -m eval.run_attacks --config config.local.yaml   # 25 attacks; invariants I1 to I6 must hold for every one
+python -m eval.run_chaos   --config config.local.yaml   # the random fault profiles, 5 turns each; the scripted faults run offline
+python -m eval.report --tests --config config.local.yaml   # the PRD section 9 table, measured from those runs and the offline suites
+python -m eval.run_judge RUN_DIR --config config.yaml       # advisory: a model that did not answer scores each turn of a finished run (evalkit/rubrics.xlsx); --allow-self-judge for a smoke test
+```
 
 ## Runtime files
 

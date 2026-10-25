@@ -147,3 +147,41 @@ def durable(project: Path, fake_bigquery: FakeClient):
     env = ReportsEnv(project, fake_bigquery, checkpoints=True)
     yield env
     env.close()
+
+
+@pytest.fixture
+def offline_eval(local_project: Path, local_db, scripted_gateway, tmp_path: Path):
+    """The evaluation harness on the sample data with a scripted model (plan 09): the app a `chat` starts, the Golden Bucket on as in
+    config.local.yaml, and a `FakeGateway` the test scripts. See tests/eval_support.py."""
+    from eval.harness import Harness
+    from tests.eval_support import Offline, write_local_config
+
+    settings = write_local_config(local_project, local_db, golden=True)
+    out_dir = tmp_path / "eval-run"
+    harness = Harness(settings, out_dir)
+    yield Offline(settings, harness, scripted_gateway, out_dir)
+    harness.close()
+
+
+@pytest.fixture
+def chaos_eval(local_project: Path, local_db, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """The same, with the REAL `LLMGateway` (retries, breaker, rate limit, injected faults) over a fake SDK client that answers by schema, and ONE clock that
+    moves when the gateway waits and that the turn budget reads too, so a 429 storm takes no real time and still spends the turn's seconds (plan 09,
+    `tests/test_chaos_offline.py`)."""
+    from eval.harness import Harness
+    from src.agent import runtime as runtime_module
+    from src.llm import gateway as gateway_module
+    from src.llm.fake import FakeClock
+    from tests.eval_support import Offline, SchemaClient, write_local_config
+
+    real, real_build = gateway_module.LLMGateway, runtime_module.build_agent
+    clock, client = FakeClock(), SchemaClient()
+    monkeypatch.setattr(
+        "src.llm.gateway.LLMGateway",
+        lambda settings, **kwargs: real(settings, client=client, clock=clock, sleep=clock.sleep, jitter=lambda: 0.5, **kwargs),
+    )
+    monkeypatch.setattr("src.agent.runtime.build_agent", lambda *args, **kwargs: real_build(*args, clock=clock, **kwargs))
+    settings = write_local_config(local_project, local_db, golden=False)
+    harness = Harness(settings, tmp_path / "eval-run")
+    yield Offline(settings, harness, None, tmp_path / "eval-run", client=client, clock=clock)
+    harness.close()

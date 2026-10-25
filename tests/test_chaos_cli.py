@@ -71,6 +71,31 @@ def test_without_the_flag_there_is_no_engine(config_path):
         session.db.close()
 
 
+def test_an_engine_the_caller_built_is_used_as_it_is_and_labelled_scripted(config_path):
+    from src.llm.chaos import Chaos
+
+    engine = Chaos.scripted()
+    session = cli_main.open_session(Renderer(), "alice", config_path, debug=False, chaos=None, chaos_seed=None, conversation=None, chaos_engine=engine)
+    try:
+        assert session.chaos_engine is engine and session.chaos == "scripted"
+        text = " ".join(cli_main.banner(session).split())
+        assert "Chaos mode scripted is on" in text and "faults are injected on purpose" in text
+        assert "Replay a run" not in text and "--chaos scripted" not in text  # a scripted engine has no flag to replay it with
+    finally:
+        session.db.close()
+
+
+def test_a_level_or_a_seed_together_with_an_engine_is_refused_because_it_would_describe_a_profile_that_is_not_running(config_path):
+    from src.llm.chaos import Chaos
+
+    for options in ({"chaos": cli_main.ChaosLevel.harsh}, {"chaos_seed": 5}):
+        with pytest.raises(ValueError, match="replaces `chaos` and `chaos_seed`"):
+            cli_main.open_session(
+                Renderer(), "alice", config_path, debug=False, conversation=None, chaos_engine=Chaos.scripted(),
+                **{"chaos": None, "chaos_seed": None, **options},
+            )
+
+
 def loaded_after(imports: str, tmp_path) -> str:
     script = (
         f"import sys; sys.path.insert(0, {str(ROOT)!r})\n{imports}\n"
@@ -101,3 +126,20 @@ def test_the_names_of_the_llm_package_resolve_on_first_use_and_unknown_names_are
     assert {"LLMGateway", "TurnBudget", "Step"} <= set(dir(src.llm)) and set(src.llm.__all__) <= set(dir(src.llm))
     with pytest.raises(AttributeError):
         src.llm.NoSuchName
+
+
+def test_an_engine_with_a_level_keeps_its_level_and_seed_and_a_scripted_one_shows_no_seed(config_path):
+    from src.llm.chaos import Chaos
+
+    engine = Chaos.from_level("harsh", 7)
+    session = cli_main.open_session(Renderer(), "alice", config_path, debug=False, chaos=None, chaos_seed=None, conversation=None, chaos_engine=engine)
+    try:
+        text = " ".join(cli_main.banner(session).split())
+        assert session.chaos == "harsh" and "Chaos mode harsh is on (seed 7)" in text and "--chaos harsh --chaos-seed 7" in text
+    finally:
+        session.db.close()
+    session = cli_main.open_session(Renderer(), "alice", config_path, debug=False, chaos=None, chaos_seed=None, conversation=None, chaos_engine=Chaos.scripted())
+    try:
+        assert "seed None" not in cli_main.banner(session) and "(seed" not in cli_main.banner(session)
+    finally:
+        session.db.close()

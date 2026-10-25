@@ -1,0 +1,103 @@
+# Chaos scenarios (plan 09, F37, NFR19). Faults are injected into the model calls, the queries and the SQL the writer returns, and the chat must stay up.
+#
+# A scenario has either a random profile (`chaos: {level, seed}`, the same flags as `chat --chaos --chaos-seed`) or scripted `faults` (offline only: the run
+# queues them on `Chaos.scripted()`; a live run has no way to aim a fault, so it plays only the random ones). The questions are asked in turn until there
+# are `turns` turns.
+#
+# For every turn, whatever the faults: no unhandled exception; a failed or refused turn shows a friendly message with a trace ID and has a metrics row with
+# that ID; the turn stays inside its budget; the invariants I1 to I6 hold. `expect` adds what only this scenario can show.
+# `fault` names are those of src/llm/chaos.py: llm: rate_limit, unavailable, timeout, bad_json; bq: unavailable, timeout; sql: syntax, unknown_column.
+
+- id: random-harsh-20-turns
+  title: Twenty turns under the harsh profile
+  description: About 40% of model calls, 30% of queries and 40% of the turns' first SQL are hit. A run of faults is cut short, so turns can still finish.
+  user: alice
+  chaos: {level: harsh, seed: 11}
+  questions:
+    - What was my revenue in 2025?
+    - How many items did my brands sell in 2025?
+    - Which of my products had the most revenue in 2025?
+    - What was the average price of an item I sold in 2025?
+  turns: 20
+  expect:
+    outcomes: [answered, partial, refused, failed]
+
+- id: random-mild-10-turns
+  title: Ten turns under the mild profile
+  description: About 15% of model calls are hit. Most turns should still end answered.
+  user: bob
+  chaos: {level: mild, seed: 5}
+  questions:
+    - What was my revenue in 2025?
+    - How many items did my brand sell in 2025?
+  turns: 10
+  expect:
+    outcomes: [answered, partial, refused, failed]
+
+- id: storm-429-on-every-model-call
+  title: A rate-limit storm
+  description: The first model calls all get a 429. The retries wait and give up, and the breaker of the model opens so the next calls do not queue behind it.
+  user: alice
+  faults:
+    - {kind: llm, fault: rate_limit, times: 40}
+  questions: ["What was my revenue in 2025?"]
+  turns: 3
+  expect:
+    breaker_opened: true
+    outcomes: [failed, answered, partial]
+
+- id: models-return-5xx
+  title: Every model call fails with a 503
+  description: Nothing a model does is available. Each turn ends in a polite message with a trace ID, and nothing else is hurt.
+  user: alice
+  faults:
+    - {kind: llm, fault: unavailable, times: 80}
+  questions: ["What was my revenue in 2025?"]
+  turns: 3
+  expect:
+    breaker_opened: true
+    outcomes: [failed, refused]
+
+- id: bigquery-times-out
+  title: BigQuery times out on every attempt of a turn
+  description: The runner retries within its limit, then reports the query as too slow; the turn goes on with what it has or ends politely.
+  user: alice
+  faults:
+    - {kind: bq, fault: timeout, times: 12}
+  questions: ["What was my revenue in 2025?"]
+  turns: 3
+  expect:
+    outcomes: [answered, partial, failed]
+
+- id: bad-sql-once
+  title: The SQL writer's first query is broken, the repair works
+  description: One query has a syntax error. The SQL loop repairs it, and the turn answers.
+  user: alice
+  faults:
+    - {kind: sql, fault: syntax, times: 1}
+  questions: ["What was my revenue in 2025?"]
+  turns: 2
+  expect:
+    all_answered: true
+
+- id: bad-sql-always
+  title: Every query the SQL writer returns is broken
+  description: Repairs are corrupted too. The loop gives up inside its limit and the turn ends politely, never in a crash.
+  user: alice
+  faults:
+    - {kind: sql, fault: unknown_column, times: 60}
+  questions: ["What was my revenue in 2025?"]
+  turns: 2
+  expect:
+    outcomes: [failed, partial, refused]
+
+- id: malformed-json-replies
+  title: The model answers with text that is not JSON
+  description: A reply that cannot be read is asked for again once. If it is still bad, the step fails in a way the graph handles.
+  user: alice
+  faults:
+    - {kind: llm, fault: bad_json, times: 6}
+  questions: ["What was my revenue in 2025?"]
+  turns: 3
+  expect:
+    outcomes: [answered, partial, failed, refused]
