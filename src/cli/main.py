@@ -83,15 +83,18 @@ def open_session(
     debug_prompts: bool = False,
     settings: Settings | None = None,
     gateway_wrapper: Callable[[Any], Any] | None = None,
+    chaos_engine: Chaos | None = None,
 ) -> ChatSession:
     """Everything that must be right before a chat can start. Raises ConfigError for a startup problem.
 
     `settings` and `gateway_wrapper` are for the scenario runner (`src/scenarios`), which starts the same session as `chat` does: it
-    brings settings of its own (a data folder per run) and wraps the model gateway to record what each prompt held."""
+    brings settings of its own (a data folder per run) and wraps the model gateway to record what each prompt held. `chaos_engine` is for
+    tests and the evaluation: a `Chaos` they built and scripted themselves, used instead of one made from `chaos`."""
+    if chaos_engine is not None and (chaos is not None or chaos_seed is not None):
+        raise ValueError("`chaos_engine` is an engine the caller built: it replaces `chaos` and `chaos_seed`, and passing them too would describe a profile that is not running")
     if chaos_seed is not None and chaos is None:
         raise ConfigError("--chaos-seed has no effect without --chaos.", fix="Add --chaos mild or --chaos harsh, or leave out --chaos-seed.")
-    chaos_engine = None
-    if chaos is not None:
+    if chaos_engine is None and chaos is not None:
         chaos_engine = Chaos.from_level(chaos.value, chaos_seed)  # without a seed one is drawn; it is shown in the banner
     settings = settings or load_settings(config)
     setup_logging(settings, debug)
@@ -204,7 +207,7 @@ def open_session(
         conversation_id=conversation_id,
         turn_count=turn_count,
         debug=debug,
-        chaos=chaos.value if chaos else None,
+        chaos=(chaos_engine.level or "scripted") if chaos_engine else None,  # an engine the caller built keeps its own level; only a scripted one has none
         chaos_seed=chaos_engine.seed if chaos_engine else None,
         chaos_engine=chaos_engine,
         personas=personas,
@@ -300,9 +303,11 @@ def banner(session: ChatSession) -> str:
     if backend.provider != "gemini":
         text += f"\nLOCAL MODEL: {backend.model} at {backend.base_url} (environment {session.settings.app.environment}), not Gemini."
     if session.chaos:
-        text += (f"\nChaos mode {session.chaos} is on (seed {session.chaos_seed}): faults are injected on purpose into model "
-                 f"calls, queries and the SQL the model writes, to show how the agent copes. "
-                 f"Replay a run with --chaos {session.chaos} --chaos-seed {session.chaos_seed}.")
+        replayable = session.chaos in ("mild", "harsh") and session.chaos_seed is not None  # a scripted engine has no flag and no seed
+        replay = f" Replay a run with --chaos {session.chaos} --chaos-seed {session.chaos_seed}." if replayable else ""
+        seed = f" (seed {session.chaos_seed})" if session.chaos_seed is not None else ""
+        text += (f"\nChaos mode {session.chaos} is on{seed}: faults are injected on purpose into model "
+                 f"calls, queries and the SQL the model writes, to show how the agent copes." + replay)
     return text
 
 

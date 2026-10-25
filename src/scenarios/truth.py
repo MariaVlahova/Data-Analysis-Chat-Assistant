@@ -121,6 +121,35 @@ class Truth:
     def strings(self, sql: str, brands: tuple[str, ...] = ()) -> list[str]:
         return self._reference.strings(self.expand_sql(sql, brands))
 
+    @property
+    def macros(self) -> "Macros":
+        return Macros(self)
+
+
+class Macros:
+    """What a caller outside `src/scenarios` may have of a `Truth`: the macros and the facts of the data they are filled from, never `number` or `strings`,
+    which run SQL outside the guards. `eval/` gets this, so its own reference SQL must go through the SQL Guard and the safe runner."""
+
+    def __init__(self, truth: Truth) -> None:
+        self._truth = truth
+
+    @property
+    def latest_date(self) -> date:
+        return self._truth.latest_date
+
+    @property
+    def brands(self) -> frozenset[str]:
+        return self._truth.brands
+
+    def other_brand(self, brands: tuple[str, ...]) -> str:
+        return self._truth.other_brand(brands)
+
+    def expand_sql(self, sql: str, brands: tuple[str, ...], brand: str | None = None) -> str:
+        return self._truth.expand_sql(sql, brands, brand)
+
+    def expand_text(self, text: str, brands: tuple[str, ...]) -> str:
+        return self._truth.expand_text(text, brands)
+
 
 class Canaries:
     def __init__(self, db_path: Path) -> None:

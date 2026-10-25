@@ -37,3 +37,6 @@ langgraph-checkpoint-sqlite>=3.0
 
 # Tests
 pytest>=8.0
+
+# Evaluation rubrics (evalkit.rubrics): reading the judge-graded rubric workbook, evalkit/rubrics.xlsx.
+openpyxl>=3.1

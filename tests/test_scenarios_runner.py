@@ -150,6 +150,28 @@ def test_a_crash_inside_a_turn_is_reported_not_raised(run_scenarios, scripted_ga
     assert "a bug in a step" not in result.turns[0].text  # the user sees the friendly message and a trace ID, never the exception's text
 
 
+def test_a_failure_in_the_judging_of_a_turn_fails_the_scenario_and_keeps_the_turns_before_it(run_scenarios, scripted_gateway, monkeypatch):
+    """The judging is the caller's hook. When it breaks on the second turn, the first is still in the result, and the scenario fails on `run the scenario`."""
+    from src.scenarios import checks
+
+    script_revenue(scripted_gateway, "Your brands earned 1.00 in 2025.")
+    real = checks.invariants
+    calls = []
+
+    def breaks_on_the_second(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError("a bug in the judging, with jane.canary@example.com in its message")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(checks, "invariants", breaks_on_the_second)
+    two_turns = scenario(turns=[{"say": "What was my revenue in 2025?"}, {"say": "And in 2024?"}])
+    (result,) = run_scenarios(two_turns).scenarios
+    assert result.status == "fail" and len(result.turns) == 1
+    failed = [check for check in result.checks if check.status == "fail"]
+    assert [check.name for check in failed] == ["run the scenario"] and "stopped at turn 2" in failed[0].detail and "canary" not in failed[0].detail
+
+
 def test_a_user_with_no_brands_is_a_failed_start_not_a_crash(run_scenarios, scripted_gateway):
     (result,) = run_scenarios(scenario(user="nobrands")).scenarios
     assert result.status == "fail" and result.turns == []

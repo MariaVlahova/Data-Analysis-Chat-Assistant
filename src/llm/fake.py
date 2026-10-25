@@ -54,6 +54,13 @@ class FakeGateway:
         self._always[step] = reply
         return self
 
+    def reset_script(self) -> "FakeGateway":
+        """Forget every queued and standing reply, and keep the calls: a test that scripts a conversation turn by turn replaces the script
+        between turns, so a reply a turn did not use is not taken by the next one."""
+        self._queues.clear()
+        self._always.clear()
+        return self
+
     def calls_for(self, step: Step) -> list[FakeCall]:
         return [call for call in self.calls if call.step is step]
 

@@ -1,0 +1,279 @@
+# Golden cases (plan 09). One case per thing the prototype promises; the user stories (US) and requirements (F) are named in `story`.
+#
+# Each turn says what is typed and what must be true of the answer. The right figures come from `reference_sql`: the runner runs it through the
+# SAME SQL Guard and query runner as the same user, so the scope of the figures is the user's by construction and a reference the guard refuses is a
+# bug in the case (tests/test_golden_cases.py). The answer must state the first `top_n` values of `compare.column` within `rel_tolerance`. Numbers are
+# compared, never sentences (decision 3.13).
+#
+# Questions that depend on a business word say what it means ("count revenue as ..."), so the check measures the arithmetic and not a guess at the
+# word. Years are written out (2025) so that a refresh of the data does not move the right answer. Users are the names of users.local.yaml and
+# users.bigquery.yaml (alice and bob manage brands, carol manages a small brand, dave two brands with planted effects, ceo sees all).
+#
+# `outcome` lists the outcomes that are right (default: answered or partial). `forbid` lists invariants the turn must have passed, not skipped.
+# Budgets are the configured ones for the kind of turn unless a case says `budget: {calls: N}`.
+
+- id: rev-monthly-alice
+  title: Monthly revenue of a manager's own brands
+  story: US1
+  user: alice
+  question: >
+    What was the monthly revenue of my brands in 2025? Count revenue as the sale price of items that were not cancelled or returned.
+  turn_kind: simple
+  reference_sql: |
+    SELECT FORMAT_DATE('%Y-%m', DATE(oi.created_at)) AS month, SUM(oi.sale_price) AS revenue
+    FROM order_items oi
+    WHERE oi.status NOT IN ('Cancelled', 'Returned') AND EXTRACT(YEAR FROM oi.created_at) = 2025
+    GROUP BY month
+    ORDER BY revenue DESC
+  compare: {column: revenue, top_n: 5, rel_tolerance: 0.01}
+  must_state: [how_i_read, scope_line]
+  forbid: [pii, other_brands]
+  budget: {calls: 8}
+
+- id: why-state-underspend-ceo
+  title: Why one state spends less per item than another (several queries)
+  story: US2
+  user: ceo
+  question: >
+    Why do customers in Texas spend less per item than customers in California? Count only items that were not cancelled or returned.
+  turn_kind: why
+  reference_sql: |
+    SELECT u.state AS state, AVG(oi.sale_price) AS avg_item_price
+    FROM order_items oi JOIN users u ON u.id = oi.user_id
+    WHERE u.state IN ('Texas', 'California') AND oi.status NOT IN ('Cancelled', 'Returned')
+    GROUP BY u.state
+    ORDER BY avg_item_price DESC
+  compare: {column: avg_item_price, top_n: 2, rel_tolerance: 0.02}
+  must_state: [how_i_read, scope_line]
+  forbid: [pii]
+
+- id: report-q1-alice
+  title: A first-quarter report with insights and action items
+  story: US3
+  user: alice
+  question: >
+    Write a report on how my brands did in the first quarter of 2025: revenue, what drove it, and action items. Count revenue as the sale price of
+    items that were not cancelled or returned.
+  turn_kind: report
+  reference_sql: |
+    SELECT p.brand AS brand, SUM(oi.sale_price) AS revenue
+    FROM order_items oi JOIN products p ON p.id = oi.product_id
+    WHERE oi.status NOT IN ('Cancelled', 'Returned') AND DATE(oi.created_at) BETWEEN DATE '2025-01-01' AND DATE '2025-03-31'
+    GROUP BY p.brand
+    ORDER BY revenue DESC
+  compare: {column: revenue, top_n: 2, rel_tolerance: 0.01}
+  must_state: [how_i_read, scope_line, action_items]
+  forbid: [pii, other_brands]
+
+- id: top-customers-alice
+  title: Best customers by spend, shown as fake IDs with no names
+  story: US4
+  user: alice
+  question: >
+    Who are my 10 best customers by spend in 2025? Count spend as the sale price of items that were not cancelled or returned.
+  turn_kind: simple
+  reference_sql: |
+    SELECT oi.user_id AS customer_id, SUM(oi.sale_price) AS total_spend
+    FROM order_items oi
+    WHERE oi.status NOT IN ('Cancelled', 'Returned') AND EXTRACT(YEAR FROM oi.created_at) = 2025
+    GROUP BY oi.user_id
+    ORDER BY total_spend DESC
+    LIMIT 10
+  compare: {column: total_spend, top_n: 5, rel_tolerance: 0.01}
+  says: ["Customer #"]
+  must_state: [scope_line]
+  forbid: [pii, other_brands]
+
+- id: schema-what-data-bob
+  title: What data there is, without the personal columns
+  story: US5
+  user: bob
+  question: What data do you have, and what can I ask about?
+  says: [order_items, products]
+  not_says: [street_address, first_name, last_name, latitude, longitude]
+  max_queries: 0
+  forbid: [pii]
+
+- id: follow-up-alice
+  title: A follow-up question in the same conversation
+  story: US6
+  user: alice
+  turns:
+    - say: >
+        What was my revenue in 2025? Count revenue as the sale price of items that were not cancelled or returned.
+      reference_sql: |
+        SELECT SUM(oi.sale_price) AS revenue FROM order_items oi
+        WHERE oi.status NOT IN ('Cancelled', 'Returned') AND EXTRACT(YEAR FROM oi.created_at) = 2025
+      compare: {column: revenue, top_n: 1, rel_tolerance: 0.01}
+      forbid: [pii, other_brands]
+    - say: And in 2024?
+      reference_sql: |
+        SELECT SUM(oi.sale_price) AS revenue FROM order_items oi
+        WHERE oi.status NOT IN ('Cancelled', 'Returned') AND EXTRACT(YEAR FROM oi.created_at) = 2024
+      compare: {column: revenue, top_n: 1, rel_tolerance: 0.01}
+      must_state: [scope_line]
+      forbid: [pii, other_brands]
+
+- id: scope-total-ceo
+  title: The CEO's total covers every brand
+  story: US11
+  user: ceo
+  question: >
+    What was the total revenue in 2025? Count revenue as the sale price of items that were not cancelled or returned.
+  turn_kind: simple
+  reference_sql: |
+    SELECT SUM(oi.sale_price) AS revenue FROM order_items oi
+    WHERE oi.status NOT IN ('Cancelled', 'Returned') AND EXTRACT(YEAR FROM oi.created_at) = 2025
+  compare: {column: revenue, top_n: 1, rel_tolerance: 0.005}
+  must_state: [how_i_read, scope_line]
+  forbid: [pii]
+
+- id: scope-total-alice
+  title: The same question from a manager gets the manager's total, below the CEO's
+  story: US11
+  user: alice
+  question: >
+    What was the total revenue in 2025? Count revenue as the sale price of items that were not cancelled or returned.
+  turn_kind: simple
+  reference_sql: |
+    SELECT SUM(oi.sale_price) AS revenue FROM order_items oi
+    WHERE oi.status NOT IN ('Cancelled', 'Returned') AND EXTRACT(YEAR FROM oi.created_at) = 2025
+  compare: {column: revenue, top_n: 1, rel_tolerance: 0.005}
+  exclude_figures_of: [ceo]
+  must_state: [how_i_read, scope_line]
+  forbid: [pii, other_brands]
+
+- id: compare-products-alice
+  title: Compare two products and say why
+  story: US14, F9
+  user: alice
+  question: >
+    Compare my two best-selling products by revenue in 2025 and explain why one sells more than the other. Count revenue as the sale price of
+    items that were not cancelled or returned.
+  turn_kind: why
+  reference_sql: |
+    SELECT p.name AS product, SUM(oi.sale_price) AS revenue
+    FROM order_items oi JOIN products p ON p.id = oi.product_id
+    WHERE oi.status NOT IN ('Cancelled', 'Returned') AND EXTRACT(YEAR FROM oi.created_at) = 2025
+    GROUP BY p.id, p.name
+    ORDER BY revenue DESC
+    LIMIT 2
+  compare: {column: revenue, top_n: 2, rel_tolerance: 0.01}
+  must_state: [how_i_read, scope_line]
+  forbid: [pii, other_brands]
+
+- id: up-to-date-by-category-ceo
+  title: Up-to-date revenue by category, with the date the data ends
+  story: US15, A5
+  user: ceo
+  question: >
+    What is our up-to-date revenue by product category? Count revenue as the sale price of items that were not cancelled or returned, and tell me the
+    date of the latest data.
+  turn_kind: simple
+  reference_sql: |
+    SELECT p.category AS category, SUM(oi.sale_price) AS revenue
+    FROM order_items oi JOIN products p ON p.id = oi.product_id
+    WHERE oi.status NOT IN ('Cancelled', 'Returned')
+    GROUP BY p.category
+    ORDER BY revenue DESC
+  compare: {column: revenue, top_n: 3, rel_tolerance: 0.01}
+  must_state: [data_ends]
+  forbid: [pii]
+
+- id: last-month-ceo
+  title: Last month is read from the data's last date, and the answer says which month
+  story: F6
+  user: ceo
+  question: >
+    What was our revenue last month? Count revenue as the sale price of items that were not cancelled or returned.
+  turn_kind: simple
+  reference_sql: |
+    SELECT SUM(oi.sale_price) AS revenue FROM order_items oi
+    WHERE oi.status NOT IN ('Cancelled', 'Returned')
+      AND DATE(oi.created_at) >= DATE '{last_month_start}' AND DATE(oi.created_at) < DATE '{this_month_start}'
+  compare: {column: revenue, top_n: 1, rel_tolerance: 0.01}
+  says_any: ["{last_month}", "{last_month_start}"]
+  forbid: [pii]
+
+- id: small-groups-ceo
+  title: Groups of fewer than 10 customers are hidden, and the answer says so
+  story: F15
+  user: ceo
+  question: How many customers do we have in each state?
+  turn_kind: simple
+  reference_sql: |
+    SELECT u.state AS state, COUNT(*) AS customers FROM users u
+    GROUP BY u.state HAVING COUNT(*) >= 10
+    ORDER BY customers DESC
+  compare: {column: customers, top_n: 5, rel_tolerance: 0.01}
+  hidden:
+    sql: |
+      SELECT u.state AS state FROM users u GROUP BY u.state HAVING COUNT(*) < 10
+    column: state
+  must_state: [small_group_notice]
+  forbid: [pii]
+
+- id: no-data-carol
+  title: A question the data cannot answer gets an honest "no data"
+  story: F31
+  user: carol
+  question: What was my revenue in each month of 2030?
+  turn_kind: simple
+  reference_sql: |
+    SELECT FORMAT_DATE('%Y-%m', DATE(oi.created_at)) AS month, SUM(oi.sale_price) AS revenue
+    FROM order_items oi WHERE EXTRACT(YEAR FROM oi.created_at) = 2030
+    GROUP BY month
+  reference_rows: 0
+  must_state: [no_data]
+  forbid: [pii, other_brands]
+
+- id: out-of-scope-alice
+  title: A request that is not about the data is refused, with no query
+  story: F7
+  user: alice
+  question: Write me a poem about autumn.
+  outcome: [refused]
+  max_queries: 0
+  forbid: [pii]
+
+- id: row-cap-ceo
+  title: A very long result is cut at 50 rows, and the answer says so
+  story: F15
+  user: ceo
+  question: >
+    List every product with its revenue in 2025. Count revenue as the sale price of items that were not cancelled or returned.
+  turn_kind: simple
+  reference_sql: |
+    SELECT p.id AS product_id, p.name AS product, SUM(oi.sale_price) AS revenue
+    FROM order_items oi JOIN products p ON p.id = oi.product_id
+    WHERE oi.status NOT IN ('Cancelled', 'Returned') AND EXTRACT(YEAR FROM oi.created_at) = 2025
+    GROUP BY p.id, p.name
+    ORDER BY revenue DESC
+  compare: {column: revenue, top_n: 3, rel_tolerance: 0.01}
+  must_state: [row_cap_note]
+  forbid: [pii]
+
+- id: save-then-delete-alice
+  title: Save an answer, then delete it with one confirmation
+  story: US7, US8, US9
+  user: alice
+  turns:
+    - say: >
+        What was my revenue in 2025? Count revenue as the sale price of items that were not cancelled or returned.
+      reference_sql: |
+        SELECT SUM(oi.sale_price) AS revenue FROM order_items oi
+        WHERE oi.status NOT IN ('Cancelled', 'Returned') AND EXTRACT(YEAR FROM oi.created_at) = 2025
+      compare: {column: revenue, top_n: 1, rel_tolerance: 0.01}
+      saved_reports: 0
+    - say: Save that answer as a report.
+      outcome: [action_done]
+      saved_reports: 1
+      max_queries: 0
+    - say: Now delete the report I just saved.
+      outcome: [awaiting_confirmation]
+      saved_reports: 1
+      max_queries: 0
+    - say: "yes"
+      outcome: [action_done]
+      saved_reports: 0
+      max_queries: 0

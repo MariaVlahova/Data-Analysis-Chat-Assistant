@@ -198,6 +198,11 @@ flowchart TD
 - **Revisit if:** more than about 1M items, or search across regions.
 - **Data lives in:** Cloud Storage and Postgres. Prototype: `golden/seed/*.yaml` and `glossary.yaml`, in-memory search.
 - **Source:** (Phase1 3.3, Client Q&A). Updates: an analyst reviews each candidate. A nightly job re-checks SQL. The trio format is ours to define (see Q43).
+- **Caching (production, design-only — [PROPOSED], out of scope for this prototype's implementation):** A short-lived cache sits in front of the pgvector hybrid search only, keyed by the question's embedding (rounded, so near-identical phrasing still hits) plus the user's brand scope plus the Golden Index's version number. A repeated or near-identical question then skips a second vector-plus-FTS round trip to Postgres. The version number bumps on every analyst approval, edit or retirement (3.8), so a stale hit never survives a trio change; there is no separate TTL to tune.
+  - **Why:** Golden retrieval (Context Assembly, step 1) runs on every turn, so a network round trip to Postgres on every turn is the one golden-bucket cost the prototype's in-memory index does not have to pay.
+  - **Rejected:** Caching trio text itself behind a CDN or long TTL (a retired or edited trio could still be served); no cache at all (every turn pays the round trip even for a question asked minutes earlier by another manager).
+  - **Revisit if:** pgvector latency or Postgres load becomes the bottleneck, or telemetry shows many near-duplicate questions across users.
+  - **Not built here:** the prototype's `GoldenIndex` (plan 10) is an in-memory TF-IDF search with no network call, so it needs no cache; adding one would add complexity with nothing to save. See also 3.15.
 ### 3.4 Who can see what: access rules and PII [DECIDED]
 - **Choice:** Four code layers enforce access (table below). Each user sees only their brands. The CEO sees all brands.
 - **Why:** Masking before the model stops it from repeating PII. It also keeps PII away from the Gemini API.
@@ -291,6 +296,13 @@ flowchart TD
 - **Note:** The loop-engineering PNG flagged missing "idempotent, reversible and inverse" fields. Phase1 3.12 now includes them.
 - **Revisit if:** there are more than about 10 tools. Then use an MCP gateway.
 - **Source:** (Phase1 3.12). Charts run with no network. Email checks recipient domains. Web results count as untrusted.
+### 3.15 Caching [PROPOSED]
+- **Choice:** Two layers. Built: a 24-hour file cache for the schema and brand list (`SchemaCatalog`, plan 03; a 7-day fallback if BigQuery is down), and an in-memory persona cache keyed by the file's mtime and size (3.9). Proposed, not built: nothing new in this section. BigQuery's own result cache already covers a repeated identical guarded query (`use_query_cache=True` on execute, off on the dry-run so the byte estimate stays honest); we rely on that instead of adding an app-level query-result cache. Golden retrieval's own production cache (the pgvector hybrid search only, not the prototype's in-memory index) is designed in 3.3, not here.
+- **Why:** The byte cap and the free tier (NFR7) make a repeated identical query the cheapest win on offer. The schema and persona caches already cut live calls outside the SQL loop. Inside the loop, BigQuery's own cache gives the same saving for an exact repeat with no extra moving part.
+- **Rejected:** Caching the model's answer text (a changed brand scope or a new row would make a stale answer wrong, and the guards must re-run every turn); an app-level query-result cache keyed by SQL plus scope (duplicates what BigQuery's cache already gives for an exact repeat, and a near-repeat is the rare case); a shared cache with no scope key (would leak one brand's numbers into another's answer); Redis or another cache service (one more moving part for a 6-12 hour prototype).
+- **Revisit if:** the free-tier byte budget (NFR7) binds in practice and near-duplicate (not exact-repeat) SQL across users turns out to be common.
+- **Data lives in:** `data/cache/*.json` (schema, brands); an in-memory dict (persona). No cache store for query results; BigQuery holds its own.
+- **Source:** Us (impl, 2026-10-25). No client source discusses a query cache; the "Caches" row in section 6 and the cost-lever note in 3.11 are the only prior mentions.
 ## 4. Non-functional requirements
 | ID | Requirement | Target | Status tag | Source |
 |---|---|---|---|---|
@@ -368,11 +380,11 @@ flowchart TD
 | Audit log | Cloud SQL Postgres, append-only [PROPOSED] -> SQLite | User hash | Tools -> admins | 1 year |
 | Report progress, idempotency keys | Postgres -> SQLite key column | No | Worker, tools -> API, tools | [NOT SPECIFIED] |
 | Evaluation data | `eval/datasets/` -> same | No (synthetic) | Analysts -> eval pipeline | [NOT SPECIFIED] |
-| Caches | Query results by SQL and scope; persona; judge | [NOT SPECIFIED] | Steps -> steps | Short-lived (persona) |
+| Caches | Schema and brands (`data/cache/*.json`); persona (in-memory, by file mtime); BigQuery's own repeat-query cache (3.15). No app-level query-result or judge cache. Golden retrieval's pgvector cache (3.3) is design-only, out of scope for this prototype's implementation. | No | Steps -> steps | Schema/brands 24h, 7-day outage fallback; persona until the file changes |
 | Secrets | [NOT SPECIFIED]; `bq_client.py` uses default credentials | Credentials | [NOT SPECIFIED] | [NOT SPECIFIED] |
 
 - Nobody says where the glossary, candidate queue, transcripts and secrets live.
-- Nobody says how long we keep traces, metrics and caches, or how we remove PII from them.
+- Nobody says how long we keep traces and metrics, or how we remove PII from them. Caching is decided (3.15).
 - Nobody says what a saved report contains, or if it can hold PII.
 ## 7. Fit against the original brief
 ### 7.1 Requirements
@@ -505,6 +517,7 @@ This section is our own opinion, not a fact from the sources.
 | Q41 | **Access:** In mixed orders, does the brand filter apply per item? Do order totals cover only the user's brands? | Yes to both, and answers say so | OpsFleet client | P1 |
 | Q42 | **Access:** Which roles exist besides brand manager and CEO (analyst, admin)? | Analyst and admin, plus CEO | OpsFleet client | P2 |
 | Q43 | **Golden Bucket:** Which fields does our trio format have? | Question, SQL, report, notes, tables, brands, status, version | Us | P1 |
+| Q44 | **Caching:** Beyond BigQuery's own repeat-query cache, is a cross-user query-result cache worth the staleness risk, and for how long? | No app-level query cache; rely on BigQuery's own (3.15) | Us | P2 |
 ## 11. Next documents
 - The PRD should use: sections 1, 3.6, 3.9, 4, 5, 7, and the OpsFleet client questions in section 10.
 - The architecture document should use: sections 2, 3, 4, 5, 6, 8 and 9.

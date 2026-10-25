@@ -15,7 +15,7 @@ import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 
 from rich.console import Console
 
@@ -25,13 +25,14 @@ from src.cli.render import Renderer
 from src.cli.commands import UNNUMBERED_TURN, ChatSession
 from src.config import Settings
 from src.errors import AgentError, ConfigError, ErrorKind, crash_summary, friendly, new_trace_id
+from src.llm.chaos import Chaos
 from src.guards.allowlist import load_allowlist
 from src.logging_setup import shutdown_logging
 from src.scenarios import checks as C
 from src.scenarios.checks import Check, Facts, TurnEvidence
 from src.scenarios.recording import RecordingGateway
-from src.scenarios.schema import Scenario
-from src.scenarios.truth import Canaries, Truth
+from src.scenarios.schema import ChaosSpec, Scenario
+from src.scenarios.truth import Canaries, Macros, Truth
 
 log = logging.getLogger(__name__)
 Say = Callable[[str], None]
@@ -65,6 +66,18 @@ class ScenarioResult:
 
     def count(self, status: str) -> int:
         return sum(1 for check in self.all_checks() if check.status == status)
+
+
+@dataclass
+class Played:
+    """What one conversation left behind: the evidence of each turn, the facts to judge it with, the folder the app wrote to, and the check of
+    that folder's files for personal data (made after the session closed)."""
+
+    evidence: list[TurnEvidence]
+    facts: Facts
+    folder: Path
+    files_check: Check
+    error: str = ""  # why the conversation stopped before its last line (a hook of the caller failed); the turns before it are still here
 
 
 @dataclass
@@ -107,6 +120,11 @@ class ScenarioRunner:
         # Only the sample data has a list of customers' details to look for; against BigQuery the pattern scan alone looks for personal data.
         self._canaries: Canaries | None = Canaries(settings.resolve(settings.bigquery.local_db)) if settings.bigquery.backend == "local" else None
 
+    @property
+    def macros(self) -> Macros:
+        """The macros of this data, for a caller that judges what `play` returns (`eval/`). Not the `Truth` itself: its figures bypass the guards."""
+        return self._truth.macros
+
     def close(self) -> None:
         self._truth.close()
 
@@ -132,69 +150,102 @@ class ScenarioRunner:
         why = unmet_requirement(scenario, self._settings)
         if why:
             return ScenarioResult(scenario.id, scenario.title, scenario.user, "skip", skip_reason=why)
-        folder = self._out / scenario.id
-        folder.mkdir(parents=True, exist_ok=True)
-        # The schema and brand list were read once when the run began. Each scenario starts with that copy, so it does not read them from the
-        # data again: against BigQuery that would be two small queries and four metadata calls per scenario.
-        shared = self._settings.data_path / "cache"
-        if shared.is_dir():
-            shutil.copytree(shared, folder / "cache", dirs_exist_ok=True)
-        settings = self._settings.model_copy(update={"app": self._settings.app.model_copy(update={"data_dir": str(folder)})})
-        result = ScenarioResult(scenario.id, scenario.title, scenario.user, "pass", folder=str(folder))
+        result = ScenarioResult(scenario.id, scenario.title, scenario.user, "pass", folder=str(self._out / scenario.id))
         started = time.perf_counter()
         try:
-            self._execute(scenario, settings, result)
+            self._execute(scenario, result)
         except ConfigError as exc:  # the chat would not have started either
             result.checks.append(Check("start the chat", C.FAIL, exc.message + (f" Fix: {exc.fix}" if exc.fix else "")))
         except Exception as exc:  # noqa: BLE001 - one broken scenario must not stop the rest
             log.error("scenario %s crashed: %s", scenario.id, crash_summary(exc))
             result.checks.append(Check("run the scenario", C.FAIL, f"the runner crashed ({type(exc).__name__}); see the log"))
-        finally:
-            shutdown_logging()
         result.seconds = time.perf_counter() - started
         result.status = "fail" if result.count(C.FAIL) else "pass"
         return result
 
     # one scenario ----------------------------------------------------------------------------------
 
-    def _execute(self, scenario: Scenario, settings: Settings, result: ScenarioResult) -> None:
-        if "seed_reports" in scenario.setup:
-            from src.localdata.reports import seed_saved_reports
+    def _execute(self, scenario: Scenario, result: ScenarioResult) -> None:
+        def judge(index: int, ev: TurnEvidence, facts: Facts) -> None:
+            turn = scenario.turns[index - 1]
+            allowed = [self._truth.expand_text(name, facts.user.brands) for name in [*turn.expect.allow_mentions, *turn.advisory.allow_mentions]]
+            record_ = TurnRecord(index, ev.say, ev.outcome, ev.text, ev.trace_id, ev.seconds)
+            record_.checks = [
+                *C.invariants(ev, facts, list(dict.fromkeys(allowed))),
+                *C.expectations(turn.expect, ev, facts),
+                *C.expectations(turn.advisory, ev, facts, advisory=True),
+            ]
+            result.turns.append(record_)
+            failed = [check for check in record_.checks if check.status == C.FAIL]
+            self._say(f"      {ev.outcome} in {ev.seconds:.0f} s" + (f"; FAILED: {', '.join(check.name for check in failed)}" if failed else ""))
 
-            seed_saved_reports(settings)
-        recorders: list[RecordingGateway] = []
-
-        def record(gateway):
-            recorders.append(RecordingGateway(gateway))
-            return recorders[-1]
-
-        chaos = ChaosLevel(scenario.chaos.level) if scenario.chaos else None
-        session = open_session(
-            quiet_renderer(), scenario.user, None, debug=False, chaos=chaos, chaos_seed=scenario.chaos.seed if scenario.chaos else None,
-            conversation=None, settings=settings, gateway_wrapper=record,
+        played = self.play(
+            scenario.id, scenario.user, [turn.say for turn in scenario.turns], setup=scenario.setup, chaos=scenario.chaos, after_turn=judge,
         )
+        result.checks.append(C.confirmation_invariant(played.evidence))
+        result.checks.append(played.files_check)
+        if played.error:
+            result.checks.append(Check("run the scenario", C.FAIL, played.error))
+
+    def play(
+        self, name: str, user: str, lines: Sequence[str], *, setup: Sequence[str] = (), chaos: ChaosSpec | None = None,
+        chaos_engine: Chaos | None = None, before_turn: Callable[[int, str], None] | None = None,
+        after_turn: Callable[[int, TurnEvidence, Facts], None] | None = None,
+    ) -> Played:
+        """One conversation, as a user types it: the session `chat` starts, in its own data folder `<out>/<name>`, one line after another, nothing
+        printed. This is what a scenario, a golden case and an attack all run on (`eval/`); what differs is only who judges the evidence.
+
+        `before_turn(index, line)` runs just before a line is typed (a test with a scripted model gives it that turn's replies). `after_turn(index,
+        evidence, facts)` runs right after each turn, while the session is open: a check on the state the turn left (the saved reports) cannot be made
+        later. `chaos_engine` is a scripted `Chaos` that replaces the random one of `chaos`. Raises `ConfigError` when the chat would not start.
+        Closes the session and the log files."""
+        folder = self._out / name
+        folder.mkdir(parents=True, exist_ok=True)
+        # The schema and brand list were read once when the run began. Each conversation starts with that copy, so it does not read them from the
+        # data again: against BigQuery that would be two small queries and four metadata calls per conversation.
+        shared = self._settings.data_path / "cache"
+        if shared.is_dir():
+            shutil.copytree(shared, folder / "cache", dirs_exist_ok=True)
+        settings = self._settings.model_copy(update={"app": self._settings.app.model_copy(update={"data_dir": str(folder)})})
         try:
-            facts = self._facts(settings, session)
+            if "seed_reports" in setup:
+                from src.localdata.reports import seed_saved_reports
+
+                seed_saved_reports(settings)
+            recorders: list[RecordingGateway] = []
+
+            def record(gateway):
+                recorders.append(RecordingGateway(gateway))
+                return recorders[-1]
+
+            level = ChaosLevel(chaos.level) if chaos else None
+            session = open_session(
+                quiet_renderer(), user, None, debug=False, chaos=level, chaos_seed=chaos.seed if chaos else None,
+                conversation=None, settings=settings, gateway_wrapper=record, chaos_engine=chaos_engine,
+            )
             evidence: list[TurnEvidence] = []
-            for index, turn in enumerate(scenario.turns, 1):
-                say = self._truth.expand_text(turn.say, session.user.brands)  # "{other_brand}" is a name from this data
-                allowed = [self._truth.expand_text(name, session.user.brands) for name in [*turn.expect.allow_mentions, *turn.advisory.allow_mentions]]
-                self._say(f"    turn {index}/{len(scenario.turns)}: {say}")
-                ev = self._ask(session, recorders[0], say, index)
-                evidence.append(ev)
-                record_ = TurnRecord(index, say, ev.outcome, ev.text, ev.trace_id, ev.seconds)
-                record_.checks = [
-                    *C.invariants(ev, facts, list(dict.fromkeys(allowed))),
-                    *C.expectations(turn.expect, ev, facts),
-                    *C.expectations(turn.advisory, ev, facts, advisory=True),
-                ]
-                result.turns.append(record_)
-                failed = [check for check in record_.checks if check.status == C.FAIL]
-                self._say(f"      {ev.outcome} in {ev.seconds:.0f} s" + (f"; FAILED: {', '.join(check.name for check in failed)}" if failed else ""))
-            result.checks.append(C.confirmation_invariant(evidence))
+            stopped = ""
+            try:
+                facts = self._facts(settings, session)
+                for index, line in enumerate(lines, 1):
+                    say = self._truth.expand_text(line, session.user.brands)  # "{other_brand}" is a name from this data
+                    self._say(f"    turn {index}/{len(lines)}: {say}")
+                    try:
+                        if before_turn is not None:
+                            before_turn(index, say)
+                        ev = self._ask(session, recorders[0], say, index)
+                        evidence.append(ev)
+                        if after_turn is not None:
+                            after_turn(index, ev, facts)
+                    except Exception as exc:  # noqa: BLE001 - a hook of the caller failed: what the turns before it showed is still evidence, so it is kept
+                        stopped = f"the conversation stopped at turn {index}: {crash_summary(exc)}"
+                        log.error("%s: %s", name, stopped)  # `_ask` turns the app's own failures into evidence, so what reaches here is a hook of the caller
+                        break
+            finally:
+                session.close()
+            return Played(evidence, facts, folder, self._files_check(folder), stopped)
         finally:
-            session.close()
-        result.checks.append(self._files_check(Path(result.folder)))
+            shutdown_logging()
 
     def _facts(self, settings: Settings, session: ChatSession) -> Facts:
         from src.reports.store import ReportStore
