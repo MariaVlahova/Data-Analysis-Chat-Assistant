@@ -106,7 +106,7 @@ Derive the numbers instead of guessing:
 - Bytes per turn: `budget.bytes_per_turn` (plan 01).
 - All numbers are config and tagged [OPEN] until the client answers Q3. Plan 07 creates the budget with the simple limits, then calls `upgrade()` after the Input Guard classifies the turn, because the classification call itself happens before the kind is known.
 - When the budget runs out: raise `BUDGET_EXHAUSTED` (calls or bytes) or `TURN_TIMEOUT`. The graph stops the loop and the Composer says what was done and what is missing.
-- Not built: daily budget per user with an 80% alert (NFR8 [OPEN]). The gateway calls an optional `cost_hook(tokens, model)` after each call, which production would use.
+- Daily budget per user with an 80% alert (NFR8 [OPEN]): built later as a switch that is off until the client names an amount (`budget.daily_tokens_per_user`, `src/storage/usage.py`; the chat counts each turn's tokens into a ledger and refuses a turn before it starts once the cap is reached). The gateway writes a `model call step=... tokens_in=... tokens_out=...` log line for every outbound attempt, and the optional `cost_hook(model, tokens_in, tokens_out)` after each call is used by `/eval` to count what the judge spends.
 
 ### Chaos (`--chaos`, F37, §8)
 - `--chaos mild|harsh` and `--chaos-seed N`. Seeded random, so a run can be replayed.
@@ -200,7 +200,7 @@ Things the tests showed, now written down:
 | Q10 models, Pro in routing | Flash-family only, Pro off, Pro only for the offline judge | OpsFleet client |
 | Q28 retry limits and 429 rules | In config; longer wait per retry; Flash to Flash-Lite | Us |
 | NFR9 rate limits | 10 rpm per model until set from AI Studio | Us |
-| NFR8 daily budget | Not enforced. Hook only. | OpsFleet client |
+| NFR8 daily budget | A switch, off by default: tokens are counted per user and UTC day; a cap is enforced only once one is set. The amount is the client's. | OpsFleet client |
 
 ## Risks and pitfalls
 - Model IDs in decision.md may not exist at build time. Check first.

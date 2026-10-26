@@ -220,6 +220,43 @@ def test_the_screen_shows_each_case_the_gate_and_the_baseline(offline_eval):
     assert "no baseline for this setup yet" in text and "1 of 1 case(s) passed" in text
 
 
+@pytest.mark.golden
+def test_the_run_reports_the_tokens_the_app_spent_for_each_case_and_in_total(offline_eval, tmp_path: Path):
+    from rich.console import Console
+
+    samples = play(offline_eval, "scope-total-ceo", "no-data-carol")
+    for sample in samples:  # the scripted model reports no tokens, so the turns' rows are given some, as the gateway's rows have them
+        for ev in sample.evidence:
+            ev.row.update(llm_calls=4, tokens_in=1500, tokens_out=250)
+    result = evaluate("golden", samples, setup_of(offline_eval.settings), run_id="t", live=False)
+    turns = [len(sample.evidence) for sample in samples]
+    total = sum(turns)
+
+    assert [(v.llm_calls, v.tokens_in, v.tokens_out) for v in result.verdicts] == [(4 * n, 1500 * n, 250 * n) for n in turns]
+    assert result.usage == {"llm_calls": 4 * total, "tokens_in": 1500 * total, "tokens_out": 250 * total}
+
+    paths = write_run(result, tmp_path / "run", run_id="t")
+    verdicts = json.loads(paths["verdicts"].read_text(encoding="utf-8"))
+    assert verdicts["usage"] == result.usage and [case["tokens_in"] for case in verdicts["cases"]] == [1500 * n for n in turns]
+    # evalkit's own cost accounting reads what the gateway reported, not an estimate from the length of the text
+    manifest = json.loads(paths["summary"].read_text(encoding="utf-8"))["run_manifest"]
+    assert manifest["tokens_app"] == {"input_tokens": 1500 * total, "output_tokens": 250 * total}
+    assert manifest["token_accounting"]["main"]["basis"] == "provider-reported token usage"
+
+    console = Console(width=220, record=True)
+    render(console, result)
+    text = console.export_text()
+    assert "Tokens in/out" in text and f"{1500 * turns[0]:,}/{250 * turns[0]:,}" in text
+    assert f"Model use by the app: {4 * total:,} call(s), {1500 * total:,} tokens in, {250 * total:,} tokens out." in text
+
+
+def test_a_run_whose_model_reported_no_tokens_says_zero_and_the_manifest_falls_back_to_an_estimate(offline_eval):
+    samples = play(offline_eval, "scope-total-ceo")
+    result = evaluate("golden", samples, setup_of(offline_eval.settings), run_id="z", live=False)
+    assert result.usage["tokens_in"] == 0 and result.usage["tokens_out"] == 0
+    assert result.report.run_manifest["token_accounting"]["main"]["basis"] == "estimated from message text (lower bound)"
+
+
 def test_a_run_of_some_cases_gets_no_tolerance_so_one_named_case_that_regressed_misses_the_bar(tmp_path: Path):
     """The tolerance is counted over the whole set. Without this, `run_golden one-case` could never fail: 0 passed >= 1 - 1."""
     path = tmp_path / "b.json"

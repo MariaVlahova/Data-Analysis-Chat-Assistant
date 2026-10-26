@@ -4,6 +4,7 @@ The real gateway runs against `FakeGenaiClient` (SDK-shaped replies and errors) 
 breaker and rate-limit code is the real code and no test sleeps or touches the network.
 """
 import json
+import logging
 from contextlib import contextmanager
 
 import httpx
@@ -733,3 +734,37 @@ def test_the_real_client_is_made_from_the_key_on_first_use_without_calling_the_n
 def test_the_models_the_key_can_use_are_listed_without_the_models_prefix():
     gateway, _, _ = make_gateway(client=FakeGenaiClient(["gemini-a", "gemini-b"]))
     assert gateway.available_models() == {"gemini-a", "gemini-b"}
+
+
+# tokens in the log -------------------------------------------------------------------------------
+
+def test_every_outbound_attempt_writes_one_log_line_with_its_tokens_a_failed_one_too(caplog):
+    gateway, client, clock = make_gateway()
+    client.fail(unavailable()).reply(GOOD, tokens_in=120, tokens_out=30, thoughts=20)
+    with caplog.at_level(logging.INFO, logger="src.llm.gateway"):
+        ask(gateway, clock)
+    lines = [record.getMessage() for record in caplog.records if record.getMessage().startswith("model call")]
+    assert lines == [
+        f"model call step=sql_write model={FLASH} attempt=1 tokens_in=0 tokens_out=0 fallback=False trace_id=-",
+        f"model call step=sql_write model={FLASH} attempt=2 tokens_in=120 tokens_out=50 fallback=False trace_id=-",  # thinking tokens are billed as output
+    ]
+
+
+def test_the_log_line_names_the_trace_of_the_turn_and_never_the_prompt_or_the_reply(tmp_path, caplog):
+    gateway, client, clock = make_gateway()
+    client.reply(GOOD, tokens_in=9, tokens_out=3)
+    with caplog.at_level(logging.INFO, logger="src.llm.gateway"):
+        with in_turn(tmp_path) as turn:
+            gateway.generate(Step.SQL_WRITE, system="Write SQL.", contents=f"revenue for {CANARY}", schema=Answer, budget=make_budget(clock))
+    (line,) = [record.getMessage() for record in caplog.records if record.getMessage().startswith("model call")]
+    assert f"trace_id={turn.row['trace_id']}" in line and "tokens_in=9 tokens_out=3" in line
+    assert CANARY not in caplog.text and "SELECT 1" not in caplog.text
+
+
+def test_a_call_to_the_fallback_model_is_logged_as_a_fallback(caplog):
+    gateway, client, clock = make_gateway()
+    client.fail(sdk_error(404, "NOT_FOUND"), model=FLASH).reply(GOOD, model=LITE, tokens_in=5, tokens_out=1)  # the main model does not exist for this key: its sibling answers
+    with caplog.at_level(logging.INFO, logger="src.llm.gateway"):
+        ask(gateway, clock)
+    lines = [record.getMessage() for record in caplog.records if record.getMessage().startswith("model call")]
+    assert lines[-1].endswith("tokens_in=5 tokens_out=1 fallback=True trace_id=-") and f"model={LITE}" in lines[-1]

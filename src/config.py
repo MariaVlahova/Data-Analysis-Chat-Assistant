@@ -111,6 +111,10 @@ class BudgetConfig(_Section):
     why: TurnLimits = TurnLimits(calls=20, seconds=60)  # [OPEN] S3, NFR4
     report: TurnLimits = TurnLimits(calls=20, seconds=90)
     bytes_per_turn: int = Field(2_147_483_648, gt=0)  # 2 GiB [OPEN] Q3
+    # NFR8, Q15. Tokens (in plus out) one user may spend in a UTC day, in the chat and in `/eval` together. None: no cap, which is the
+    # default until the client names an amount. The cap is checked before a turn starts, so the turn that crosses it still finishes.
+    daily_tokens_per_user: int | None = Field(None, gt=0)
+    alert_fraction: float = Field(0.8, gt=0, le=1)  # one warning line when a turn takes the day's use past this share of the cap
 
 
 class LlmModels(_Section):
@@ -244,6 +248,7 @@ class RetentionConfig(_Section):
 class ObservabilityConfig(_Section):
     metrics_file: str | None = None  # None: runs.jsonl inside app.data_dir
     traces_dir: str | None = None  # None: traces/ inside app.data_dir
+    evaluations_file: str | None = None  # None: evaluations.jsonl inside app.data_dir (one PII-free row per turn that `/eval` judged)
 
 
 class GoldenConfig(_Section):
@@ -252,6 +257,17 @@ class GoldenConfig(_Section):
     min_similarity: float = Field(0.15, ge=0, le=1)  # chosen on the seed set, see tests/test_golden_index.py
     seed_dir: str = "golden/seed"  # one trio per YAML file (plan 10)
     glossary_file: str = "glossary.yaml"
+
+
+class LiveEvaluationConfig(_Section):
+    """The `/eval` command of the chat (plan 09, the judge on the turns of a real conversation).
+
+    `enabled` only makes the command available. Nothing is judged until someone types `/eval`: the chat itself makes no judge call."""
+
+    enabled: bool = True
+    # The model service of a chat is often one model for every step (the local Qwen), or Gemini Flash for both the answers and the judge. A judge
+    # that grades its own model is not independent (decision 3.13). True: judge anyway and mark the result "not independent". False: refuse.
+    allow_self_judge: bool = True
 
 
 class PersonaConfig(_Section):
@@ -293,6 +309,7 @@ class Settings(_Section):
     retention: RetentionConfig = RetentionConfig()
     observability: ObservabilityConfig = ObservabilityConfig()
     golden: GoldenConfig = GoldenConfig()
+    evaluation: LiveEvaluationConfig = LiveEvaluationConfig()
     persona: PersonaConfig = PersonaConfig()
 
     # Not YAML keys: set by `load_settings`.
@@ -325,6 +342,11 @@ class Settings(_Section):
     def metrics_path(self) -> Path:
         configured = self.observability.metrics_file
         return self.resolve(configured) if configured else self.data_path / "runs.jsonl"
+
+    @property
+    def evaluations_path(self) -> Path:
+        configured = self.observability.evaluations_file
+        return self.resolve(configured) if configured else self.data_path / "evaluations.jsonl"
 
     @property
     def traces_path(self) -> Path:

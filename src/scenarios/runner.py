@@ -190,15 +190,16 @@ class ScenarioRunner:
     def play(
         self, name: str, user: str, lines: Sequence[str], *, setup: Sequence[str] = (), chaos: ChaosSpec | None = None,
         chaos_engine: Chaos | None = None, before_turn: Callable[[int, str], None] | None = None,
-        after_turn: Callable[[int, TurnEvidence, Facts], None] | None = None,
+        after_turn: Callable[[int, TurnEvidence, Facts], None] | None = None, restart_after: Sequence[int] = (),
     ) -> Played:
         """One conversation, as a user types it: the session `chat` starts, in its own data folder `<out>/<name>`, one line after another, nothing
         printed. This is what a scenario, a golden case and an attack all run on (`eval/`); what differs is only who judges the evidence.
 
         `before_turn(index, line)` runs just before a line is typed (a test with a scripted model gives it that turn's replies). `after_turn(index,
         evidence, facts)` runs right after each turn, while the session is open: a check on the state the turn left (the saved reports) cannot be made
-        later. `chaos_engine` is a scripted `Chaos` that replaces the random one of `chaos`. Raises `ConfigError` when the chat would not start.
-        Closes the session and the log files."""
+        later. `chaos_engine` is a scripted `Chaos` that replaces the random one of `chaos`. `restart_after` lists the turns (1-based) after which the app
+        is closed and started again on the same conversation, as `chat --conversation` does in a new process: what carried over must come back from the
+        checkpoint on disk. Raises `ConfigError` when the chat would not start. Closes the session and the log files."""
         folder = self._out / name
         folder.mkdir(parents=True, exist_ok=True)
         # The schema and brand list were read once when the run began. Each conversation starts with that copy, so it does not read them from the
@@ -219,10 +220,14 @@ class ScenarioRunner:
                 return recorders[-1]
 
             level = ChaosLevel(chaos.level) if chaos else None
-            session = open_session(
-                quiet_renderer(), user, None, debug=False, chaos=level, chaos_seed=chaos.seed if chaos else None,
-                conversation=None, settings=settings, gateway_wrapper=record, chaos_engine=chaos_engine,
-            )
+
+            def start(conversation: str | None) -> ChatSession:
+                return open_session(
+                    quiet_renderer(), user, None, debug=False, chaos=level, chaos_seed=chaos.seed if chaos else None,
+                    conversation=conversation, settings=settings, gateway_wrapper=record, chaos_engine=chaos_engine,
+                )
+
+            session = start(None)
             evidence: list[TurnEvidence] = []
             stopped = ""
             try:
@@ -233,10 +238,16 @@ class ScenarioRunner:
                     try:
                         if before_turn is not None:
                             before_turn(index, say)
-                        ev = self._ask(session, recorders[0], say, index)
+                        ev = self._ask(session, recorders[-1], say, index)
                         evidence.append(ev)
                         if after_turn is not None:
                             after_turn(index, ev, facts)
+                        if index in restart_after and index < len(lines):
+                            conversation = session.conversation_id
+                            self._say(f"    the app is started again on conversation {conversation}")
+                            session.close()
+                            shutdown_logging()  # a new process sets its logging up again
+                            session = start(conversation)
                     except Exception as exc:  # noqa: BLE001 - a hook of the caller failed: what the turns before it showed is still evidence, so it is kept
                         stopped = f"the conversation stopped at turn {index}: {crash_summary(exc)}"
                         log.error("%s: %s", name, stopped)  # `_ask` turns the app's own failures into evidence, so what reaches here is a hook of the caller
@@ -256,6 +267,7 @@ class ScenarioRunner:
         return Facts(
             settings, session.user, blocked, self._truth, self._canaries,
             saved_reports=lambda: len(store.list_reports(session.user.user_id)),
+            latest_report_title=lambda: next((row.title for row in store.find(session.user.user_id, "", "last")), None),
         )
 
     def _ask(self, session: ChatSession, recorder: RecordingGateway, say: str, index: int) -> TurnEvidence:
@@ -286,8 +298,21 @@ class ScenarioRunner:
         spans, trace_text = self._read_trace(session, trace_id)
         return TurnEvidence(
             index, say, outcome, text, error_kind, trace_id, seconds, spans, row,
-            [call.text for call in recorder.calls[first_call:]], trace_text,
+            [call.text for call in recorder.calls[first_call:]], trace_text, self._read_state(session),
         )
+
+    @staticmethod
+    def _read_state(session: ChatSession) -> dict:
+        """The conversation's checkpoint after the turn, for the checks on what carries over (`eval/trajectory.py`). {} when it cannot be read: those
+        checks then say they could not be made, and a missing state is never a pass."""
+        state_of = getattr(session.agent, "state_of", None)
+        if state_of is None:
+            return {}
+        try:
+            return state_of(session.conversation_id)
+        except Exception as exc:  # noqa: BLE001 - a checkpoint that cannot be read costs the checks on it, not the run
+            log.error("could not read the checkpoint after the turn: %s", crash_summary(exc))
+            return {}
 
     @staticmethod
     def _read_trace(session: ChatSession, trace_id: str) -> tuple[list[dict], str]:

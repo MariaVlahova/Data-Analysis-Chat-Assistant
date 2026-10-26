@@ -67,6 +67,15 @@ class AgentRuntime:
         with self._guard:
             return self._locks.setdefault(conversation_id, threading.Lock())
 
+    def state_of(self, conversation_id: str) -> dict[str, Any]:
+        """A copy of the newest checkpoint of the conversation: the graph state as the next turn will find it. For the evaluation, which asks
+        whether what carries over between turns is what should (`eval/trajectory.py`). The result rows of each sub-question are left out: what
+        reads this never needs them, and they stay in the node that ran the query. Empty when there is no checkpoint."""
+        values = dict(self.graph.get_state({"configurable": {"thread_id": conversation_id}}).values or {})
+        results = values.get("results") or {}
+        values["results"] = {sub_id: {key: value for key, value in result.items() if key != "guarded"} for sub_id, result in results.items()}
+        return values
+
     def awaiting_confirmation(self, conversation_id: str) -> bool:
         """True when the conversation is paused at the HITL Gate, with the prompt recorded, and the next line is the user's reply."""
         return _gate_interrupt(self.graph.get_state({"configurable": {"thread_id": conversation_id}})) is not None

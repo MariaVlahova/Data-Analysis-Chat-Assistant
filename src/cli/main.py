@@ -15,7 +15,7 @@ from typing import Annotated, Any, Callable, Optional
 import typer
 
 from src.access.users import load_users, require_access
-from src.cli.commands import ChatSession, TurnFn, handle_line, run_turn
+from src.cli.commands import ChatSession, TurnFn, budget_text, handle_line, run_turn
 from src.cli.bigquery_cmd import bigquery_app
 from src.cli.doctor import DoctorContext, render_checks, run_checks
 from src.cli.golden_cmd import golden_app
@@ -30,6 +30,7 @@ from src.logging_setup import setup_logging, shutdown_logging
 from src.observability import Tracer, purge_old_traces, viewer
 from src.personas import PersonaStore
 from src.storage.db import Database
+from src.storage.usage import DailyBudget, UsageLedger
 
 log = logging.getLogger("src.cli.main")  # not __name__: under `python -m` that is "__main__", outside the `src` logger
 
@@ -191,6 +192,8 @@ def open_session(
         else:
             conversation_id, turn_count = db.create_conversation(user.user_id), 0
         tracer = Tracer.from_settings(settings, debug_prompts=debug_prompts)  # inside the try: if it fails, what is open is closed
+        usage = UsageLedger.from_settings(settings)  # the tables exist: `db.migrate()` ran above
+        budget = DailyBudget.from_settings(settings, usage)
     except BaseException:
         if checkpointer is not None:
             from src.agent.checkpointer import close_checkpointer
@@ -216,6 +219,8 @@ def open_session(
         catalog=catalog,
         agent=agent,
         checkpointer=checkpointer,
+        usage=usage,
+        budget=budget,
     )
 
 
@@ -440,6 +445,30 @@ def trace(
     renderer = Renderer()
     found = viewer.show_trace(renderer.console, _load_settings_or_exit(renderer, config), trace_id, raw=raw)
     raise typer.Exit(0 if found else 1)
+
+
+@app.command()
+def budget(
+    user: Annotated[str, typer.Option("--user", "-u", help="Whose token use to show, a name from users.yaml (for example alice).")],
+    clear: Annotated[bool, typer.Option("--clear", help="Start the user's count for today again. The tokens stay in the usage records; the clear is audited.")] = False,
+    config: Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml.")] = None,
+) -> None:
+    """Show one user's token use today against the daily cap (operator view), or clear it."""
+    renderer = Renderer()
+    settings = _load_settings_or_exit(renderer, config)
+    try:
+        target = load_users(settings).get(user)
+        with Database.from_settings(settings) as db:
+            db.migrate()  # the ledger's tables are made by the same migrations as the chat's
+    except (AgentError, ConfigError) as exc:
+        message, fix = (exc.message, exc.fix) if isinstance(exc, ConfigError) else (f"The user list could not be read ({exc.detail}).", None)
+        renderer.startup_problem(message, fix)
+        raise typer.Exit(2) from None
+    daily = DailyBudget.from_settings(settings)
+    if clear:
+        cleared = daily.ledger.clear(target.user_hash, by="operator")
+        renderer.info(f"Cleared {cleared.tokens:,} tokens ({cleared.chat.tokens:,} chat, {cleared.eval.tokens:,} evaluation) from today's count for {target.user_id}.")
+    renderer.info(budget_text(daily.status(target.user_hash)))
 
 
 if __name__ == "__main__":

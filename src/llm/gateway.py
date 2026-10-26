@@ -34,7 +34,7 @@ from src.llm.chaos import Chaos, MalformedReply
 from src.llm.limiter import RateLimiter
 from src.llm.openai_compat import CompatClient, CompatHTTPError
 from src.llm.routing import Router, Step
-from src.observability import event, prompt_attrs, span, turn_metrics
+from src.observability import current_trace_id, event, prompt_attrs, span, turn_metrics
 
 log = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ MAX_OUTPUT_TOKENS_CEILING = 16_384  # ... up to this
 REASK_NOTE = (
     "Your previous reply could not be read. Reply again with only the JSON object that matches the required schema."
 )
-CostHook = Callable[[str, int, int], None]  # (model, tokens in, tokens out): production would add up a daily budget (NFR8)
+CostHook = Callable[[str, int, int], None]  # (model, tokens in, tokens out) after every attempt: `/eval` adds up what the judge spent with it
 
 # A reply that ended for one of these reasons was refused by the model's safety filters (the Input Guard treats it as a block, S10).
 _BLOCKING_FINISH = frozenset({
@@ -411,6 +411,11 @@ class LLMGateway:
         turn_metrics().add_llm_call(
             model, tokens_in=tokens_in, tokens_out=tokens_out, fallback_used=fallback,
             prompt_version=run.prompt.get("prompt_version"),
+        )
+        # One line for every outbound attempt, a failed one too (its tokens are 0): the chat's calls and `/eval`'s judge calls both pass here.
+        log.info(
+            "model call step=%s model=%s attempt=%d tokens_in=%d tokens_out=%d fallback=%s trace_id=%s",
+            run.step.value, model, run.outbound, tokens_in, tokens_out, fallback, current_trace_id() or "-",
         )
         if self._cost_hook is not None:
             try:

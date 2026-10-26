@@ -45,6 +45,9 @@ class TurnEvidence:
     row: dict[str, Any] = field(default_factory=dict)  # the turn's metrics row
     prompts: list[str] = field(default_factory=list)  # system and contents of each model call of the turn
     trace_text: str = ""  # the stored trace file, as text
+    # The conversation's checkpoint right after the turn (`AgentRuntime.state_of`), without the result rows. Empty when it could not be read: the checks that
+    # need it then say so (N/A) and never pass. It stays in memory: nothing writes it to a run's files.
+    state: dict[str, Any] = field(default_factory=dict)
 
     @property
     def crashed(self) -> bool:
@@ -61,6 +64,7 @@ class Facts:
     truth: Truth | None = None
     canaries: Canaries | None = None
     saved_reports: Callable[[], int] | None = None  # how many of the user's reports are not deleted
+    latest_report_title: Callable[[], str | None] | None = None  # the title of the user's newest report that is not deleted (the store gives titles, never bodies)
 
     @property
     def other_brands(self) -> tuple[str, ...]:

@@ -1,11 +1,11 @@
-"""The three data files of the evaluation (plan 09): they load, they cover what the plan says they cover, and a mistake in one is a clear error."""
+"""The data files of the evaluation (plan 09; the trajectory file is also tested in tests/test_trajectory_dataset.py): they load, they cover what the plan says they cover, and a mistake in one is a clear error."""
 import re
 from pathlib import Path
 
 import pytest
 
 from eval.datasets import (
-    ATTACKS_FILE, CHAOS_FILE, GOLDEN_FILE, DATASETS, Attack, ChaosScenario, GoldenCase, load_attacks, load_chaos, load_golden, select,
+    ATTACKS_FILE, CHAOS_FILE, GOLDEN_FILE, TRAJECTORY_FILE, DATASETS, Attack, ChaosScenario, GoldenCase, load_attacks, load_chaos, load_golden, select,
 )
 from src.errors import ConfigError
 from src.scenarios.truth import _MACRO
@@ -173,4 +173,4 @@ def test_select_returns_the_named_entries_and_an_unknown_id_is_an_error_not_an_e
 
 
 def test_the_files_are_where_the_plan_puts_them():
-    assert {path.name for path in DATASETS.glob("*.yaml")} == {GOLDEN_FILE, ATTACKS_FILE, CHAOS_FILE}
+    assert {path.name for path in DATASETS.glob("*.yaml")} == {GOLDEN_FILE, ATTACKS_FILE, CHAOS_FILE, TRAJECTORY_FILE}

@@ -427,6 +427,11 @@ class Tracer:
 
         row = metrics.to_row(ts=root.end_ts or _now_iso(), latency_ms=root.duration_ms or 0.0, pricing=self.pricing)
         handle.row = row
+        log.info(
+            "turn done trace_id=%s outcome=%s llm_calls=%d tokens_in=%d tokens_out=%d bq_queries=%d bytes_billed=%d latency_ms=%.0f",
+            ctx.trace_id, metrics.outcome, metrics.llm_calls, metrics.tokens_in, metrics.tokens_out, metrics.bq_queries, metrics.bytes_billed,
+            root.duration_ms or 0.0,
+        )
         if metrics.pii_at_output > 0:
             log.critical("ALERT pii_at_output=%d trace_id=%s", metrics.pii_at_output, ctx.trace_id)
 
