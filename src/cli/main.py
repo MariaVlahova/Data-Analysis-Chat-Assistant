@@ -102,6 +102,8 @@ def open_session(
     removed = purge_old_traces(settings.traces_path, settings.retention.trace_days)  # NFR22: 90 days by default
     if removed:
         log.info("deleted %d trace file(s) older than %d days", removed, settings.retention.trace_days)
+    for rows_path in (settings.metrics_path, settings.evaluations_path):  # one failure must not skip the other file
+        _housekeeping(f"the purge of old rows of {rows_path.name}", lambda rows_path=rows_path: _purge_old_metrics_rows(settings, rows_path))
 
     try:
         directory = load_users(settings)
@@ -128,6 +130,7 @@ def open_session(
         # Cheap local checks first, so a mistake in them is not reported after a wait on the network.
         db.migrate()
         _housekeeping("the purge of deleted reports", lambda: _purge_deleted_reports(settings))
+        _housekeeping("the purge of the audit log", lambda: _purge_old_audit_rows(settings))
         personas, persona_name = _open_personas(settings)
         allowlist = load_allowlist(settings)  # plan 05: no valid allow-list, no column the agent may use
         if not allowlist.reviewed_against_live:
@@ -278,6 +281,24 @@ def _purge_deleted_reports(settings: Settings) -> None:
         log.info("removed %d deleted report(s) past their undo window", removed)
 
 
+def _purge_old_metrics_rows(settings: Settings, path: Path) -> None:
+    """The rows of `runs.jsonl` or `evaluations.jsonl` older than `retention.metrics_days` (90 by default). The rows hold counts and hashes, no text."""
+    from src.observability.metrics import purge_old_rows
+
+    removed = purge_old_rows(path, settings.retention.metrics_days)
+    if removed:
+        log.info("deleted %d row(s) older than %d days from %s", removed, settings.retention.metrics_days, path.name)
+
+
+def _purge_old_audit_rows(settings: Settings) -> None:
+    """The audit rows older than `retention.audit_days` (NFR21, A11: one year at least). One `audit_purged` row says how many went."""
+    from src.storage.audit import purge_old_entries
+
+    removed = purge_old_entries(settings.db_path, settings.retention.audit_days)
+    if removed:
+        log.info("deleted %d audit row(s) older than %d days", removed, settings.retention.audit_days)
+
+
 def _purge_old_checkpoints(settings: Settings, checkpointer: Any) -> None:
     """The checkpoints of conversations idle for more than `retention.checkpoint_days` (NFR21, 90 by default)."""
     from src.agent.checkpointer import purge_old_checkpoints
@@ -359,7 +380,7 @@ def chat(
     conversation: Annotated[Optional[str], typer.Option("--conversation", help="Continue an earlier conversation by its ID.")] = None,
     config: Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml (else $OPSFLEET_CONFIG, else ./config.yaml).")] = None,
     debug: Annotated[bool, typer.Option("--debug", help="Show log lines and tracebacks on screen.")] = False,
-    debug_prompts: Annotated[bool, typer.Option("--debug-prompts", help="Store prompt text (masked) in traces. Off by default.")] = False,
+    debug_prompts: Annotated[bool, typer.Option("--debug-prompts", help="Store prompt text and the message exchange of each turn (masked, with no result rows) next to its trace. Off by default.")] = False,
 ) -> None:
     """Start a chat for a user."""
     renderer = Renderer()
@@ -439,11 +460,24 @@ def metrics(
 def trace(
     trace_id: Annotated[Optional[str], typer.Argument(help="The 8-character trace ID. Default: the last turn.")] = None,
     raw: Annotated[bool, typer.Option("--raw", help="Print the stored spans as JSON.")] = False,
+    exchange: Annotated[bool, typer.Option("--exchange", help="Print what was sent to the model and what came back, step by step (only for a chat started with --debug-prompts).")] = False,
+    conversation: Annotated[Optional[str], typer.Option("--conversation", help="List the turns of one conversation (by its ID) instead of one turn.")] = None,
     config: Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml.")] = None,
 ) -> None:
-    """Show the steps of one turn by its trace ID (any user: this is the operator view)."""
+    """Show the steps of one turn by its trace ID (any user: this is the operator view), its message exchange, or the turns of a conversation."""
     renderer = Renderer()
-    found = viewer.show_trace(renderer.console, _load_settings_or_exit(renderer, config), trace_id, raw=raw)
+    settings = _load_settings_or_exit(renderer, config)
+    if conversation is not None:
+        if trace_id or raw or exchange:
+            renderer.info("--conversation lists a conversation's turns; leave out the trace ID, --raw and --exchange.")
+            raise typer.Exit(2)
+        raise typer.Exit(0 if viewer.show_conversation(renderer.console, settings, conversation) else 1)
+    if exchange and raw:
+        renderer.info("--exchange and --raw cannot be used together.")
+        raise typer.Exit(2)
+    if exchange:
+        raise typer.Exit(0 if viewer.show_exchange(renderer.console, settings, trace_id) else 1)
+    found = viewer.show_trace(renderer.console, settings, trace_id, raw=raw)
     raise typer.Exit(0 if found else 1)
 
 

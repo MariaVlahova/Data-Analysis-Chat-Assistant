@@ -26,7 +26,7 @@ def golden(offline, *args, case="scope-total-ceo", correct=True):
     """Script a model for one case (all turns the same), and run the command on it."""
     offline.oracle(CASES[case])(1, CASES[case].turns[0].say)
     if not correct:  # the SQL of the wrong year: a figure the data holds, and not the right one
-        wrong = "SELECT SUM(oi.sale_price) AS revenue FROM order_items oi WHERE EXTRACT(YEAR FROM oi.created_at) = 2024"
+        wrong = "SELECT SUM(oi.sale_price) AS revenue FROM order_items oi WHERE oi.status NOT IN ('Cancelled', 'Returned') AND EXTRACT(YEAR FROM oi.created_at) = 2024"
         offline.gateway.always(Step.SQL_WRITE, sql_reply(wrong))
         offline.gateway.always(Step.COMPOSER, composer_reply("The total revenue is in the table.", "Revenue"))
     return runner.invoke(run_golden.app, [case, "--config", config_of(offline), "--skip-preflight", "--out", str(offline.out_dir / "cli"), *args])
@@ -163,7 +163,7 @@ def test_a_run_below_the_current_baseline_is_not_written_over_it_even_when_asked
     B.record(path, B.setup_of(offline_eval.settings), {"scope-total-ceo": True}, run_id="before", tolerance=5)
     before = path.read_text(encoding="utf-8")
     offline_eval.oracle(CASES["scope-total-ceo"])(1, CASES["scope-total-ceo"].turns[0].say)
-    wrong = "SELECT SUM(oi.sale_price) AS revenue FROM order_items oi WHERE EXTRACT(YEAR FROM oi.created_at) = 2024"
+    wrong = "SELECT SUM(oi.sale_price) AS revenue FROM order_items oi WHERE oi.status NOT IN ('Cancelled', 'Returned') AND EXTRACT(YEAR FROM oi.created_at) = 2024"
     offline_eval.gateway.always(Step.SQL_WRITE, sql_reply(wrong))
     offline_eval.gateway.always(Step.COMPOSER, composer_reply("The total revenue is in the table.", "Revenue"))
     result = runner.invoke(run_golden.app, ["--config", config_of(offline_eval), "--skip-preflight", "--out", str(offline_eval.out_dir / "lower"),
@@ -219,7 +219,7 @@ def test_a_live_attack_run_gates_on_the_invariants_and_only_shows_whether_it_was
     live run reports and does not count; nothing leaked, so the run passes."""
     attack = ATTACKS["pii-emails-of-top-customers"]
     offline_eval.gateway.always(Step.INPUT_GUARD, guard_reply(standalone="my revenue"))
-    offline_eval.gateway.always(Step.SQL_WRITE, sql_reply("SELECT SUM(oi.sale_price) AS revenue FROM order_items oi"))
+    offline_eval.gateway.always(Step.SQL_WRITE, sql_reply("SELECT SUM(oi.sale_price) AS revenue FROM order_items oi WHERE oi.status NOT IN ('Cancelled', 'Returned')"))
     offline_eval.gateway.always(Step.COMPOSER, composer_reply("The revenue is in the table.", "Revenue"))
     result = runner.invoke(run_attacks.app, [attack.id, "--config", config_of(offline_eval), "--skip-preflight", "--out", str(offline_eval.out_dir / "cli")])
     assert result.exit_code == 0, result.output

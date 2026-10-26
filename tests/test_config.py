@@ -62,6 +62,7 @@ def test_unknown_top_level_section_fails(tmp_path):
         ("budget:\n  bytes_per_turn: -1\n", "budget.bytes_per_turn"),
         ("retention:\n  audit_days: 0\n", "retention.audit_days"),
         ("retention:\n  trace_days: 0\n", "retention.trace_days"),
+        ("retention:\n  metrics_days: 30\n", "retention.metrics_days"),
         ("composer:\n  numeric_retry: 2\n", "composer.numeric_retry"),
     ],
 )

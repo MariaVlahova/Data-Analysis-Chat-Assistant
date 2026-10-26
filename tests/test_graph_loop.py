@@ -100,7 +100,7 @@ def test_a_guard_violation_is_never_retried_and_the_refusal_names_the_rule(rig):
 
 # empty results --------------------------------------------------------------------------------------------------------
 
-EMPTY_SQL = REVENUE_SQL.replace("GROUP BY", "WHERE oi.status = 'Nonexistent' GROUP BY")
+EMPTY_SQL = REVENUE_SQL.replace("GROUP BY", "AND oi.status = 'Nonexistent' GROUP BY")  # REVENUE_SQL has its WHERE (the revenue definition, plan 12)
 
 
 def test_an_empty_result_triggers_exactly_one_broaden_then_an_honest_no_data(rig):
@@ -140,7 +140,10 @@ def test_groups_hidden_for_being_small_are_not_broadened(rig):
     """Widening would not help: the rows exist, and the Result Guard hid them (S7)."""
     k = "__k_users"
     rig.client.add("GROUP BY u.state", df=pd.DataFrame({"state": ["X", "Y"], "revenue": [10.0, 20.0], k: [3, 4]}))
-    sql = "SELECT u.state, SUM(oi.sale_price) AS revenue FROM order_items oi JOIN users u ON u.id = oi.user_id GROUP BY u.state"
+    sql = (
+        "SELECT u.state, SUM(oi.sale_price) AS revenue FROM order_items oi JOIN users u ON u.id = oi.user_id "
+        "WHERE oi.status NOT IN ('Cancelled', 'Returned') GROUP BY u.state"
+    )
     simple(rig, writes=[sql], repairs=[sql + " LIMIT 5"], compose="Nothing to show.")
     result = rig.ask("revenue by state")
     assert rig.calls(Step.SQL_REPAIR) == 0 and "2 groups with fewer than 10 customers were hidden" in result.text
@@ -188,7 +191,7 @@ def test_a_failed_sub_question_does_not_stop_the_others(rig):
     rig.gateway.queue(Step.SQL_WRITE, AgentError(ErrorKind.LLM_UNAVAILABLE), sql_reply())
     rig.gateway.queue(Step.EVIDENCE_CHECK, {"enough": True, "missing": []})
     rig.gateway.queue(Step.COMPOSER, composer_reply(BODY))
-    result = rig.ask("Why?")
+    result = rig.ask("Why did my revenue change?")
     assert result.outcome == "partial", result
     assert 'I could not get "First"' in result.text and "Limited data" in result.text and "Brand A earned" in result.text
 
@@ -210,7 +213,7 @@ def test_a_why_turn_that_runs_out_of_calls_still_answers_with_what_it_has(projec
     rig.gateway.queue(Step.PLANNER, plan_reply("One", "Two", "Three", "Four"))
     rig.gateway.queue(Step.SQL_WRITE, sql_reply(), sql_reply())
     rig.gateway.queue(Step.COMPOSER, composer_reply(BODY))
-    result = rig.ask("Why?")
+    result = rig.ask("Why did my revenue change?")
     assert result.outcome == "partial", result
     assert rig.last_row["llm_calls"] == 5  # exactly the limit: the answer's call was kept
     assert result.text.count("I did not get to") == 2 and "Limited data" in result.text
@@ -224,7 +227,7 @@ def test_a_why_turn_stays_within_its_budget_even_when_everything_goes_wrong(rig)
         rig.gateway.always(step, sql_reply("SELECT oi.nopeColumnQ FROM order_items oi"))
     rig.gateway.always(Step.COMPOSER, composer_reply("I could not get the data."))
     rig.gateway.always(Step.EVIDENCE_CHECK, {"enough": True, "missing": []})
-    rig.ask("Why?")
+    rig.ask("Why did my revenue change?")
     assert rig.last_row["llm_calls"] <= rig.settings.budget.why.calls == 20
 
 
@@ -245,7 +248,7 @@ def test_when_the_time_is_up_after_one_good_result_the_answer_is_built_from_it(p
     rig.gateway.queue(Step.PLANNER, plan_reply("One", "Two"))
     # the first query is fine; the minute runs out while the second one is being written
     rig.gateway.queue(Step.SQL_WRITE, sql_reply(), lambda call: (clock.advance(61), sql_reply())[1])
-    result = rig.ask("Why?")
+    result = rig.ask("Why did my revenue change?")
     assert result.outcome == "partial", result
     assert "| Brand A | 1234.5 |" in result.text and 'I did not get to "Two"' in result.text
     assert "TURN_TIMEOUT" in rig.last_row["error_kinds"] and "straight from the data" in result.text  # no time left to ask the Composer
@@ -346,7 +349,7 @@ def test_a_refusal_of_the_widening_does_not_make_a_two_part_turn_refuse_the_firs
     rig.gateway.queue(Step.SQL_REPAIR, sql_reply("SELECT email FROM users"))
     rig.gateway.queue(Step.EVIDENCE_CHECK, {"enough": True, "missing": []})
     rig.gateway.queue(Step.COMPOSER, composer_reply(BODY))
-    result = rig.ask("Why?")
+    result = rig.ask("Why did my revenue change?")
     assert "I did not run" not in result.text and "personal details" not in result.text
     assert 'No data was found for "Revenue of odd orders"' in result.text and "Brand A earned" in result.text
 

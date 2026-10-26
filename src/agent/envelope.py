@@ -5,6 +5,7 @@ Around the Composer's body, in this order:
      a note when the data ends earlier than today (F6, A5).
   2. The scope line ("your brands: ..." or "all brands").
   3. The body.
+  3b. For a simple turn with one result, the figures of that result as a table the code builds (plan 12, D1).
   4. Notes: every notice of the Result Guard ("3 groups with fewer than 10 customers were hidden", "Showing top 50 of 1,240
      rows"), the status of every sub-question that is not ok, and a "limited data" label when the answer is partial (Q35).
 
@@ -135,10 +136,12 @@ def is_partial(state: TurnState) -> bool:
 
 def render_answer(
     state: TurnState, body: str, *, title: str | None = None, numeric_removed: bool = False, degraded: bool = False,
-    ground: Ground | None = None,
+    ground: Ground | None = None, table: str = "",
 ) -> tuple[str, list[str]]:
     """The final text and the notes in it. The text is not stored anywhere until the Output Guard has passed it. With a `ground`,
-    the lines the model wrote around the body (the reading, the missing evidence) get the numeric check too."""
+    the lines the model wrote around the body (the reading, the missing evidence) get the numeric check too. `table` is the code-built
+    table of a simple turn (`result_table`): it comes from guarded rows, so the numeric check does not hold it, and the Output Guard
+    checks it with the rest of the text."""
     partial = degraded or numeric_removed or is_partial(state)  # a figure left out is a gap too (Q35)
     reading = reading_lines(state, ground)
     notes = notes_lines(state, numeric_removed=numeric_removed, partial=partial, ground=ground)
@@ -152,6 +155,8 @@ def render_answer(
     if title and state.get("turn_kind") == "report":
         blocks.append(f"## {title}")
     blocks.append(body.strip())
+    if table:
+        blocks.append(table)
     if notes:
         blocks.append(NOTES_HEADING + "\n" + "\n".join(f"- {line}" for line in notes))
     return "\n\n".join(block for block in blocks if block), notes
@@ -183,17 +188,37 @@ def _cell(value: Any) -> str:
     return text if len(text) <= MAX_TABLE_CELL else text[: MAX_TABLE_CELL - 1] + "…"
 
 
-def render_table(guarded: Mapping[str, Any], limit: int = FALLBACK_ROWS) -> str:
+def render_table(guarded: Mapping[str, Any], limit: int = FALLBACK_ROWS, *, more_note: bool = False) -> str:
+    """A result as a markdown table of at most `limit` rows. The footer says how many rows the query had (the default), or with `more_note`
+    how many of the guarded rows are left out of the table (the Result Guard's own notice already says when it capped the result)."""
     columns = list(guarded.get("columns", []))
-    rows = guarded.get("rows", [])[:limit]
+    available = guarded.get("rows", [])
+    rows = available[:limit]
     if not columns or not rows:
         return ""
     lines = ["| " + " | ".join(_cell(column) for column in columns) + " |", "|" + "---|" * len(columns)]
     lines += ["| " + " | ".join(_cell(row.get(column)) for column in columns) + " |" for row in rows]
     shown, total = len(rows), guarded.get("total_rows", len(rows))
-    if total > shown:
+    if more_note:
+        if len(available) > shown:
+            lines.append(f"\n_{len(available) - shown:,} more rows are not shown._")
+    elif total > shown:
         lines.append(f"\n_Showing {shown:,} of {total:,} rows._")
     return "\n".join(lines)
+
+
+def result_table(state: TurnState, limit: int) -> str:
+    """The figures of a simple turn as a table, built by code from the guarded rows (plan 12, D1). Empty for any other turn and for a
+    result that is not `ok`. Why and report turns keep their figures in the text: several tables would bury the answer."""
+    if state.get("turn_kind") != "simple":
+        return ""
+    subquestions = state.get("plan", {}).get("subquestions", [])
+    if len(subquestions) != 1:
+        return ""
+    result = state.get("results", {}).get(subquestions[0]["id"], {})
+    if result.get("status") != OK or not result.get("guarded"):
+        return ""
+    return render_table(result["guarded"], limit, more_note=True)
 
 
 def fallback_body(state: TurnState) -> str | None:

@@ -88,7 +88,7 @@ What the stand-ins are:
 | Telemetry | A local span file per turn, `runs.jsonl`, `/trace` and `/metrics`. |
 | Audit log | An append-only table in SQLite, protected by triggers. |
 | Eval Pipeline | The `eval/` commands and the pytest suite. The AI judge is built as an advisory second pass, over a finished run or, on request, over the turns of a chat (`/eval`). Promptfoo, human labels and the deploy gate are design. |
-| Gemini API | Built (`google-genai`), but **not yet run on a live key**. The prototype runs today on a local model through the same gateway (see the README). |
+| Gemini API | Built (`google-genai`) and the default model service, but **not yet run on a live key**: the author's free quota ran out. The prototype was run on a local model through the same gateway; `OPSFLEET_ENV=default` (or `app.environment`) switches back to Gemini with no code change (see the README). |
 
 The two loops of the runtime are bounded in code: the SQL repair loop (one attempt and two repairs) and the replan loop (`max_replans`, 0 in the prototype).
 
@@ -171,7 +171,7 @@ flowchart TD
 | Node | Model | What it does | Code |
 |---|---|---|---|
 | `policy_context` | none | Reads `users.yaml`, fails closed (`NO_ACCESS`, `ACCESS_STORE_DOWN`) | `src/agent/nodes/policy.py` |
-| `input_guard` | Flash-Lite | Cleans the text, then one structured call: in scope, injection, intent, selector, standalone question | `nodes/input_guard.py` |
+| `input_guard` | Flash-Lite | Cleans the text, then one structured call: in scope, injection, intent, selector, standalone question. Then a check in code: a data question must hold a word of the store's domain in what the user typed (`guards/domain_words.py`, plan 12), or the turn ends with a question the code wrote | `nodes/input_guard.py` |
 | `refuse` | none | A fixed refusal text | `nodes/failure.py` |
 | `describe_schema` | none | Lists the allow-listed tables and columns | `nodes/schema_answer.py` |
 | `context_assembly` | none | Dates, locked definitions, persona, glossary, similar trios (the last two only when `golden.enabled` is true: it is false in `config.yaml`, true in the local and BigQuery configs) | `nodes/context.py` |
@@ -237,7 +237,7 @@ One row per building block: what it does, the technology, why, the alternative w
 | Telemetry | Spans, metrics, a short trace ID per turn | OpenTelemetry to Langfuse (self-hosted) and Cloud Trace; Pub/Sub with a dead-letter topic to BigQuery metrics [DECIDED, 3.12] | A trace ID in each error opens the full conversation view. | LangSmith (hosted; PII residency concerns). Revisit if the client already uses Datadog or Grafana. | Local span file, `runs.jsonl`, `/trace`, `/metrics`. **Stand-in.** |
 | Golden Bucket and Ingest Job | Analyst-approved trios in Cloud Storage; an Eventarc job validates, dry-runs, scans for PII and embeds them | Cloud Storage, Eventarc, Cloud Sensitive Data Protection, `gemini-embedding-001` [PROPOSED, 3.3] | Source of truth in a versioned bucket; the index is rebuilt from it. | Automatic promotion of candidates: it opens the door to poisoning. | Seed files and `golden validate` (the Ingest Job in miniature). **Stand-in.** |
 | Candidate queue | Holds candidate trios until an analyst approves them | [NOT SPECIFIED] where it lives (Q16) | Nothing reaches the index without a human. | None. | None. **Design.** |
-| Eval Pipeline | Tests before deploy | evalkit and Promptfoo in CI; golden test set, attack tests, AI judge [PROPOSED, 3.13] | Cheap checks first. One PII leak fails the run. The judge never grades its own model. | Grading SQL by string match; self-grading. | `eval/` commands and pytest. **Stand-in.** |
+| Eval Pipeline | Tests before deploy | evalkit and Promptfoo in CI; golden test set, attack tests, AI judge [PROPOSED, 3.13] | Cheap checks first. One PII leak fails the run. The judge should not grade its own model; when it must (one local model, or Gemini with Pro off), every result is marked "not independent" (`evaluation.allow_self_judge`). | Grading SQL by string match; self-grading that is not marked as such. | `eval/` commands and pytest. **Stand-in.** |
 | Async workers | Long reports in the background | Cloud Tasks to a Cloud Run worker; progress rows in Postgres; dead-letter queue [PROPOSED] | A report should not hold a user's connection open. | A state bus beside the graph state: the graph state already carries the data. | Synchronous, with progress lines. **Design.** |
 | Persona | Tone and report sections | `personas/default.yaml` in git [DECIDED, 3.9] | Out of scope to manage it (owner decision). | A Persona Registry with an admin UI. | **Built** (one file). |
 | Secrets | Gemini key, database credentials | A secret store (our proposal, Q16 default) | Keys never live in config files or git. | None. | `.env`, git-ignored. **Stand-in.** |
@@ -291,7 +291,7 @@ Copied from [decision.md](decision.md) section 8, with the status of each row.
 | Cloud Tasks background workers | Synchronous, with progress shown | Stand-in |
 | Idempotency keys, failed-job queues | Unique `idempotency_key` column and tests. Failed-job queues are design-only. | Keys built. Queues: design |
 | Bounded replan | Off by default (`max_replans` = 0) | Built, off |
-| Eval pipeline | Pytest for guards, PII scanner, confirmation flow; 16 golden cases; 25 attacks; `--chaos` runs; 11 trajectory cases and nine path and memory rules on every turn | Stand-in. Full pipeline: design |
+| Eval pipeline | Pytest for guards, PII scanner, confirmation flow; 16 golden cases; 27 attacks; `--chaos` runs; 11 trajectory cases and nine path and memory rules on every turn | Stand-in. Full pipeline: design |
 | Charts, email, web search | Design-only. The tool registry interface is real. | Design |
 
 Beyond the table, two development aids exist that production does not have: generated sample data in DuckDB (`bigquery.backend: local`) and a model served on the developer's machine (`app.environment: local`). They let the whole app run with no Google sign-in. The banner says `LOCAL SAMPLE DATA` and `LOCAL MODEL` wherever a local run could pass for a live one. They do not replace the live steps listed in section 9 of the explanation.
@@ -312,14 +312,14 @@ Copied from [decision.md](decision.md) section 6. The cells that say [NOT SPECIF
 | Conversation state | Postgres checkpoints -> SQLite | Yes (questions, drafts) | Graph -> graph | 90 days |
 | Transcripts | [NOT SPECIFIED] | PII removed | [NOT SPECIFIED] | 90 days |
 | Persona file | `personas/default.yaml` in git -> same | No | Developers -> Context Assembly | [NOT SPECIFIED] |
-| Traces | Langfuse, Cloud Trace -> local log file | [NOT SPECIFIED] | Every step -> developers | [NOT SPECIFIED] |
+| Traces | Langfuse, Cloud Trace -> local log file (`traces/<id>.jsonl`; with `--debug-prompts` also `<id>.exchange.jsonl`, the message exchange of the turn, with no result row) | [NOT SPECIFIED] | Every step -> developers | [NOT SPECIFIED] (prototype: 90 days, the exchange file with its trace) |
 | Metrics events | Pub/Sub, BigQuery -> `runs.jsonl` | [NOT SPECIFIED] | Every turn -> dashboards | [NOT SPECIFIED] |
-| Audit log | Cloud SQL Postgres, append-only [PROPOSED] -> SQLite | User hash | Tools -> admins | 1 year |
+| Audit log | Cloud SQL Postgres, append-only [PROPOSED] -> SQLite | User hash | Tools -> admins | 1 year (prototype: purged at startup after `retention.audit_days`, 365 at least; the database refuses to delete a younger row) |
 | Report progress, idempotency keys | Postgres -> SQLite key column | No | Worker, tools -> API, tools | [NOT SPECIFIED] |
 | Evaluation data | `eval/datasets/` -> same | No (synthetic) | Analysts -> eval pipeline | [NOT SPECIFIED] |
-| Caches | Schema and brands (`data/cache/*.json`); persona (in-memory, by file mtime); BigQuery's own repeat-query cache (3.15). No app-level query-result or judge cache. Golden retrieval's pgvector cache (3.3) is design-only, out of scope for this prototype's implementation. | No | Steps -> steps | Schema/brands 24h, 7-day outage fallback; persona until the file changes |
+| Caches | Schema, brands and product categories (`data/cache/*.json`); persona (in-memory, by file mtime); BigQuery's own repeat-query cache (3.15). No app-level query-result or judge cache. Golden retrieval's pgvector cache (3.3) is design-only, out of scope for this prototype's implementation. | No | Steps -> steps | Schema/brands/categories 24h, 7-day outage fallback; persona until the file changes |
 | Secrets | [NOT SPECIFIED]; `bq_client.py` uses default credentials | Credentials | [NOT SPECIFIED] | [NOT SPECIFIED] |
 
 Still unanswered by any source (also in [decision.md](decision.md) section 6): where the glossary, the candidate queue, transcripts and secrets live; how long traces and metrics are kept and how PII is removed from them; what a saved report contains and whether it can hold PII.
 
-What the prototype does in practice for the open cells (all (impl) defaults, not decisions): traces are deleted after 90 days (`retention.trace_days`), `runs.jsonl` rows hold counts and IDs only and are kept, and a saved report must pass the Output Guard before it is stored.
+What the prototype does in practice for the open cells (all (impl) defaults, not decisions): traces are deleted after 90 days (`retention.trace_days`), `runs.jsonl` and `evaluations.jsonl` rows hold counts and IDs only and are deleted after 90 days too (`retention.metrics_days`, at least 31), and a saved report must pass the Output Guard before it is stored.

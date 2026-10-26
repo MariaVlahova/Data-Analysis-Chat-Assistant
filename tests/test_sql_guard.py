@@ -62,9 +62,7 @@ VALID = {
     "IN subquery": ("SELECT COUNT(*) AS n FROM orders WHERE order_id IN (SELECT order_id FROM order_items WHERE status = 'Returned')", 2),
     "correlated EXISTS": ("SELECT COUNT(*) AS n FROM orders o WHERE EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.order_id)", 2),
     "self join": ("SELECT COUNT(*) AS n FROM orders o1 JOIN orders o2 ON o1.order_id = o2.order_id", 2),
-    "a CTE called like a table": ("WITH orders AS (SELECT 1 AS order_id) SELECT COUNT(*) AS n FROM orders", 0),
     "a CTE that reads the table it is called after": ("WITH orders AS (SELECT order_id FROM orders) SELECT COUNT(*) AS n FROM orders", 1),
-    "no table at all": ("SELECT 1 AS one", 0),
     "trailing semicolon": ("SELECT COUNT(*) AS n FROM orders;", 1),
     "parenthesised query": ("(SELECT COUNT(*) AS n FROM orders)", 1),
     "safe prefix and builtin namespaces": ("SELECT SAFE.DIVIDE(SUM(sale_price), COUNT(*)) AS avg_price, NET.HOST('https://a.test/x') AS h FROM order_items", 1),
@@ -104,6 +102,20 @@ def test_the_executed_text_is_generated_from_the_tree_not_copied_from_the_input(
 
 
 # structure --------------------------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("sql", [
+    "SELECT 1 AS one",
+    "WITH orders AS (SELECT 1 AS order_id) SELECT COUNT(*) AS n FROM orders",  # a CTE called like a table reads no table
+    "WITH poem AS (SELECT 'roses are red' AS line) SELECT line FROM poem",
+    "SELECT 'a poem about the sea' AS poem",
+    "SELECT * FROM UNNEST(['a', 'b']) AS x",
+])
+def test_a_query_that_reads_none_of_the_stores_tables_is_refused_and_never_repaired(guard, sql):
+    """Plan 12, A2 (R2a): the agent answers analysis questions only, and a query that reads no table is no analysis of the data."""
+    err = refused(guard, sql)
+    assert err.kind == ErrorKind.GUARD_VIOLATION and err.rule_id == "NO_DATA_TABLE" and not err.repairable
+    assert "poem" not in err.user_message
+
 
 @pytest.mark.parametrize("sql,rule", [
     ("DROP TABLE orders", "NOT_SELECT"),
@@ -165,7 +177,7 @@ def test_a_function_that_cannot_be_parsed_is_a_repairable_syntax_error(guard):
 def test_config_adds_to_the_deny_list_and_names_are_matched_without_regard_to_case():
     custom = make_guard(denied_functions=["FARM_FINGERPRINT"])
     assert violation_rule(custom, "SELECT farm_fingerprint('x')") == "DISALLOWED_FUNCTION"
-    accepted(make_guard(), "SELECT FARM_FINGERPRINT('x') AS h", ALICE)  # not on the built-in list: allowed (everything else is)
+    accepted(make_guard(), "SELECT FARM_FINGERPRINT(status) AS h FROM orders", ALICE)  # not on the built-in list: allowed (everything else is)
 
 
 @pytest.mark.parametrize("configured", [[], ["FARM_FINGERPRINT"], ["SOMETHING_ELSE", "NS.*"]])
@@ -234,7 +246,8 @@ def test_table_names_match_without_regard_to_case_and_the_rewrite_uses_the_real_
 def test_a_table_the_model_hides_behind_a_cte_name_is_still_checked(guard):
     """The CTE called `payments` is a CTE. The reference inside its own body is the table, and it is refused."""
     assert violation_rule(guard, "WITH payments AS (SELECT * FROM payments) SELECT * FROM payments") == "TABLE_NOT_ALLOWED"
-    accepted(guard, "WITH payments AS (SELECT 1 AS x) SELECT * FROM payments", ALICE)
+    accepted(guard, "WITH payments AS (SELECT order_id AS x FROM orders) SELECT * FROM payments", ALICE)
+    assert violation_rule(guard, "WITH payments AS (SELECT 1 AS x) SELECT * FROM payments") == "NO_DATA_TABLE"  # a CTE of literals reads no table
 
 
 # PII --------------------------------------------------------------------------------------------------------------
@@ -687,7 +700,7 @@ def test_the_guarded_query_carries_what_plans_06_and_07_read(guard):
 
 
 def test_a_guarded_query_cannot_be_changed(guard):
-    gq = accepted(guard, "SELECT 1 AS one", ALICE)
+    gq = accepted(guard, "SELECT COUNT(*) AS n FROM orders", ALICE)
     with pytest.raises(Exception):
         gq.sql = "DROP TABLE orders"  # type: ignore[misc]
 
@@ -810,8 +823,7 @@ def test_a_cte_with_a_tables_name_does_not_hide_the_table_from_the_lineage(guard
 
 
 def test_a_cte_with_a_tables_name_still_works_when_it_is_the_one_being_read(guard):
-    gq = accepted(guard, "WITH users AS (SELECT 1 AS id) SELECT COUNT(*) AS n FROM users", ALICE)
-    assert gq.tables == frozenset() and not gq.per_customer and BRAND_FILTER not in gq.sql
+    assert violation_rule(guard, "WITH users AS (SELECT 1 AS id) SELECT COUNT(*) AS n FROM users") == "NO_DATA_TABLE"  # the CTE is read, and no table is
     gq = accepted(guard, "WITH orders AS (SELECT order_id FROM orders WHERE status = 'x') SELECT COUNT(*) AS n FROM orders", ALICE)
     assert gq.tables == {"orders"} and brand_filters(gq.sql) == 1
 

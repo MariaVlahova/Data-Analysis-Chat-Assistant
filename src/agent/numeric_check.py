@@ -9,6 +9,10 @@ A number that is not grounded loses its sentence, or its table row (Q29 default)
 quietly wrong. A number next to `%` or a currency sign is never exempt. The only exempt numbers are plain whole numbers that
 count something visible: the rows and bullets of the answer itself, and the sub-questions of the plan.
 
+A second question follows (plan 12, A3, R2a): does the answer state anything from the data at all? `states_result_value` is true when
+the body holds a figure that came from a result, or a text value of a result cell (a brand, a category, a month). A draft that states
+none is not an answer to a question about the data, whatever its words, and the Composer node replaces it with the guarded figures.
+
 The check is deliberately literal. It does not accept a growth rate or a share the model worked out itself. If that rejects
 too many correct figures in the golden runs, add a code-computed `derived_facts` table to the Composer's input (plan 07,
 "Optional, measurement-driven") so the model quotes instead of calculating.
@@ -22,6 +26,8 @@ from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 MIN_USEFUL_CHARS = 25  # fewer letters and digits than this left after the removals is filler, not an answer ("Here are the key insights:")
 NUMERIC_NOTE = "Some figures could not be verified against the data and were left out."
+RULE_NOT_FROM_DATA = "ANSWER_NOT_FROM_DATA"  # the guard decision when a draft states nothing from the results (A3)
+MIN_TEXT_VALUE = 2  # a text cell of one character ("M") is not evidence that the body speaks of the data
 
 _NUMBER = re.compile(
     r"""
@@ -222,6 +228,33 @@ def _grounded_by(token: Token, ground: Ground) -> str | None:
             if abs(abs(candidate) / token.scale - token.value) <= tolerance:
                 return source
     return None
+
+
+# does the answer say anything from the data (plan 12, A3) ----------------------------------------------------------
+
+def _result_owner(source: str) -> str | None:
+    """The sub-question a source belongs to when it is a value of that result: not a year or a count (`:date`, `:plain`), and not the
+    question, the plan, the context or the definitions, which have no sub-question ID. A verbatim match ends in `:text`."""
+    if source.endswith(_PLAIN_SOURCES):
+        return None
+    return source[: -len(":text")] if source.endswith(":text") else source
+
+
+def states_result_value(body: str, matched: Iterable[str], results: Mapping[str, Mapping[str, Any]]) -> bool:
+    """True when `body` states a value of an `ok` result: a number the check matched to such a result (`matched` is `NumberCheck.matched`),
+    or a text cell of one of its rows, written out. Only whole words count, in any case."""
+    ok = {sid for sid, result in results.items() if result.get("status") == "ok"}
+    if any(_result_owner(entry.rpartition("<-")[2]) in ok for entry in matched):
+        return True
+    lowered = " ".join(body.casefold().split())
+    for sid in ok:
+        for row in (results[sid].get("guarded") or {}).get("rows", []):
+            for value in row.values():
+                if isinstance(value, str):
+                    text = " ".join(value.casefold().split())
+                    if len(text) >= MIN_TEXT_VALUE and re.search(rf"(?<!\w){re.escape(text)}(?!\w)", lowered):
+                        return True
+    return False
 
 
 # the check ---------------------------------------------------------------------------------------------------------

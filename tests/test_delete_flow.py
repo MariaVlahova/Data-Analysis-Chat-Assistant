@@ -312,7 +312,7 @@ def test_a_search_for_a_brand_does_not_match_every_report_through_the_scope_line
     reports.fake_bigquery.add("revenue", df=pd.DataFrame({"brand": ["Brand A"], "revenue": [1234.5]}))
     reports.rig.gateway.queue(Step.INPUT_GUARD, guard_reply(standalone="Revenue by brand"))
     reports.rig.gateway.queue(Step.SQL_WRITE, sql_reply())
-    reports.rig.gateway.queue(Step.COMPOSER, composer_reply("Revenue was strong this month."))
+    reports.rig.gateway.queue(Step.COMPOSER, composer_reply("Revenue was strong this month for Brand A."))
     answered = reports.rig.ask("revenue by brand")
     assert "*Scope: your brands: Brand A, Brand B*" in answered.text  # every answer carries it
     assert reports.say("save_report").outcome == "action_done"

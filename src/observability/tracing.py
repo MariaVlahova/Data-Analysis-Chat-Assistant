@@ -72,6 +72,13 @@ def trace_file(traces_dir: Path, trace_id: object) -> Path | None:
     return Path(traces_dir) / f"{safe}.jsonl" if safe else None
 
 
+def exchange_file(traces_dir: Path, trace_id: object) -> Path | None:
+    """Where the message exchange of a turn lives (plan 12, R7c), or None for an ID that is not valid. Next to the trace, kept as long as it
+    is: the purge removes both. Only a chat started with `--debug-prompts` writes it."""
+    safe = valid_trace_id(trace_id)
+    return Path(traces_dir) / f"{safe}.exchange.jsonl" if safe else None
+
+
 # attribute cleaning ----------------------------------------------------------------------------
 
 def _text(value: str) -> str:
@@ -115,6 +122,12 @@ def clean(value: Any, _depth: int = 0) -> Any:
     return f"<{type(value).__name__}>"  # a DataFrame or any other object: its type, never its content
 
 
+def debug_prompts_enabled() -> bool:
+    """True inside a turn of a chat started with `--debug-prompts`."""
+    ctx = _TRACE.get()
+    return ctx is not None and ctx.tracer.debug_prompts
+
+
 def prompt_attrs(template_id: str, version: str | int, text: str) -> dict[str, Any]:
     """Span attributes that describe a prompt without storing it (F41).
 
@@ -127,10 +140,21 @@ def prompt_attrs(template_id: str, version: str | int, text: str) -> dict[str, A
         "prompt_hash": digest,
         "prompt_chars": len(text),
     }
-    ctx = _TRACE.get()
-    if ctx is not None and ctx.tracer.debug_prompts:
+    if debug_prompts_enabled():
         attrs["prompt_text"] = text
     return attrs
+
+
+def exchange_path() -> Path | None:
+    """The exchange file of the running turn when `--debug-prompts` is on, else None (outside a turn too). The caller appends to it; the folder
+    is made here."""
+    ctx = _TRACE.get()
+    if ctx is None or not ctx.tracer.debug_prompts:
+        return None
+    path = exchange_file(ctx.tracer.traces_dir, ctx.trace_id)
+    if path is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 # spans -----------------------------------------------------------------------------------------
@@ -473,15 +497,15 @@ class Tracer:
 
 # retention -------------------------------------------------------------------------------------
 
-# A trace file, or the temp file of a write that failed. Built from the same ID shape as `valid_trace_id`,
-# so `runs.jsonl` (or anything else) in the same folder is never matched.
-_TRACE_FILE_RE = re.compile(rf"{_ID_PATTERN}\.jsonl(?:\.tmp)?")
+# A trace file, the exchange file beside it (plan 12), or the temp file of a write that failed. Built from the same ID shape as
+# `valid_trace_id`, so `runs.jsonl` (or anything else) in the same folder is never matched.
+_TRACE_FILE_RE = re.compile(rf"{_ID_PATTERN}(?:\.exchange)?\.jsonl(?:\.tmp)?")
 
 
 def purge_old_traces(traces_dir: Path, days: int, *, now: datetime | None = None) -> int:
     """Delete trace files older than `days` (NFR22, Q25 default 90). Returns how many were removed.
 
-    Only files named like a trace are touched. `runs.jsonl` rows carry no PII and are kept.
+    Only files named like a trace are touched. `runs.jsonl` is not: its rows carry no PII and have their own, longer limit (`metrics.purge_old_rows`).
     """
     cutoff = ((now or datetime.now(timezone.utc)) - timedelta(days=days)).timestamp()
     removed = 0

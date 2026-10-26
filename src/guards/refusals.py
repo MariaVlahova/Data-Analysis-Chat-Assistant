@@ -14,6 +14,10 @@ REFUSALS: dict[str, str] = {
     "DISALLOWED_FUNCTION": "That needs a function I'm not allowed to use, so I did not run it.",
     "WILDCARD_TABLE": "That needs tables I'm not allowed to use. I only use the store's orders, order items, products and customers.",
     "TABLE_NOT_ALLOWED": "That needs data I'm not allowed to use. I only use the store's orders, order items, products and customers.",
+    "NO_DATA_TABLE": (
+        "That query does not read any of the store's data, so I did not run it. I answer questions from the store's orders, "
+        "order items, products and customers."
+    ),
     "PII_COLUMN": (
         "That asks for personal details that could identify a customer, such as who they are or how to reach them. "
         "I never show those. I can show totals, trends and rankings instead."

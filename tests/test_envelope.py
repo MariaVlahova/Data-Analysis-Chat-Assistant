@@ -126,7 +126,10 @@ def rig(project, fake_bigquery):
 def test_the_reading_the_scope_and_the_notices_are_in_the_answer_even_when_the_composer_leaves_them_out(rig):
     k = "__k_users"
     rig.client.add("GROUP BY u.state", df=pd.DataFrame({"state": ["X", "Y", "Z"], "revenue": [100.0, 200.0, 300.0], k: [50, 3, 4]}))
-    sql = "SELECT u.state, SUM(oi.sale_price) AS revenue FROM order_items oi JOIN users u ON u.id = oi.user_id GROUP BY u.state"
+    sql = (
+        "SELECT u.state, SUM(oi.sale_price) AS revenue FROM order_items oi JOIN users u ON u.id = oi.user_id "
+        "WHERE oi.status NOT IN ('Cancelled', 'Returned') GROUP BY u.state"
+    )
     rig.agent.deps.today = lambda: date(2026, 11, 20)  # a month after the data ends
     rig.gateway.queue(Step.INPUT_GUARD, guard_reply(standalone="Revenue by state"))
     rig.gateway.queue(Step.SQL_WRITE, sql_reply(sql, "Revenue is the sum of item sale prices, all statuses."))

@@ -145,19 +145,28 @@ def _new(session: ChatSession, arg: str) -> None:
     session.renderer.info(f"Started a new conversation: {session.conversation_id}")
 
 
-@register_slash("trace", "/trace [id] [--raw]", "Show the steps of a turn (default: the last one)")
+TRACE_USAGE = "Usage: /trace [id] [--raw | --exchange]   or   /trace --conversation [id]"
+
+
+@register_slash("trace", "/trace [id] [--raw | --exchange | --conversation]", "Show the steps, the message exchange or the conversation (default: the last turn)")
 def _trace(session: ChatSession, arg: str) -> None:
     words = arg.split()
-    raw = "--raw" in words
+    flags = {word for word in words if word.startswith("--")}
     ids = [word for word in words if not word.startswith("--")]
-    unknown = [word for word in words if word.startswith("--") and word != "--raw"]
-    if unknown or len(ids) > 1:
-        session.renderer.info("Usage: /trace [id] [--raw]")
+    if flags - {"--raw", "--exchange", "--conversation"} or len(ids) > 1 or len(flags) > 1:
+        session.renderer.info(TRACE_USAGE)
         return
-    viewer.show_trace(
-        session.renderer.console, session.settings, ids[0] if ids else None,
-        raw=raw, user=session.user, default_id=session.last_trace_id,
-    )
+    if "--conversation" in flags:  # the current conversation, or another one of the user's by its ID
+        viewer.show_conversation(session.renderer.console, session.settings, ids[0] if ids else session.conversation_id, user=session.user)
+    elif "--exchange" in flags:
+        viewer.show_exchange(
+            session.renderer.console, session.settings, ids[0] if ids else None, user=session.user, default_id=session.last_trace_id,
+        )
+    else:
+        viewer.show_trace(
+            session.renderer.console, session.settings, ids[0] if ids else None,
+            raw="--raw" in flags, user=session.user, default_id=session.last_trace_id,
+        )
 
 
 @register_slash("metrics", "/metrics [--last N]", "Show totals and rates of your turns")

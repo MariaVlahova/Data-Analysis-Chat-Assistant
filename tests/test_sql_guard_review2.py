@@ -51,8 +51,8 @@ def test_a_function_stored_in_a_dataset_is_refused_however_its_path_is_spelled(g
     "SELECT SAFE.DIVIDE(SUM(sale_price), COUNT(*)) AS a FROM order_items",
     "SELECT NET.HOST('https://a.test/x') AS h FROM order_items",
     "SELECT NET.IP_FROM_STRING('1.2.3.4') AS ip FROM order_items",
-    "SELECT KEYS.NEW_KEYSET('AEAD_AES_GCM_256') AS k",
-    "SELECT SAFE.PARSE_JSON('{}') AS j",
+    "SELECT KEYS.NEW_KEYSET('AEAD_AES_GCM_256') AS k FROM orders",
+    "SELECT SAFE.PARSE_JSON('{}') AS j FROM orders",
     "SELECT COUNT(*) AS n, COALESCE(MAX(sale_price), 0) AS m FROM order_items",
 ])
 def test_the_namespaces_that_belong_to_bigquery_still_work(guard, sql):

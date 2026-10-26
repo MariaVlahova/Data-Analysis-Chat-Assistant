@@ -100,7 +100,9 @@ ANALYTIC_QUERIES: dict[str, str] = {
         "SELECT CASE WHEN sale_price > 100 THEN 'high' WHEN sale_price > 50 THEN 'mid' ELSE 'low' END AS band, COUNT(*) AS items "
         "FROM order_items GROUP BY band"),
     "struct output": "SELECT STRUCT(p.brand AS brand, COUNT(*) AS n) AS s FROM products p GROUP BY p.brand",
-    "date spine": "SELECT d FROM UNNEST(GENERATE_DATE_ARRAY(DATE '2024-01-01', DATE '2024-01-07')) AS d",
+    "date spine": (
+        "SELECT d, COUNT(o.order_id) AS orders FROM UNNEST(GENERATE_DATE_ARRAY(DATE '2024-01-01', DATE '2024-01-07')) AS d "
+        "LEFT JOIN orders o ON DATE(o.created_at) = d GROUP BY d"),
     "filter on a derived table": "SELECT * FROM (SELECT brand, COUNT(*) AS n FROM products GROUP BY brand) WHERE n > 10 ORDER BY n DESC",
     "customers per state": "SELECT u.state, COUNT(DISTINCT u.id) AS customers FROM users u GROUP BY u.state",
     "revenue by traffic source": (

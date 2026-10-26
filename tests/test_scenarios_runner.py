@@ -405,7 +405,10 @@ def test_the_shipped_revenue_scenario_asks_for_each_of_the_users_brands_and_pass
 
 def test_the_shipped_revenue_scenario_fails_when_one_brands_figure_is_missing(run_scenarios, scripted_gateway, setup):
     maple = brand_revenue(setup, "Maple & Co", "AND EXTRACT(YEAR FROM oi.created_at) = 2025")
-    script_revenue(scripted_gateway, f"Maple & Co earned {maple:,.2f}.")
+    # The query returns only Maple & Co: the answer shows the table of what the query returned (plan 12, D1), so the other brand's figure is missing from the data.
+    scripted_gateway.always(Step.INPUT_GUARD, guard_reply(standalone="What was my revenue in 2025?"))
+    scripted_gateway.always(Step.SQL_WRITE, sql_reply(BRAND_REVENUE.replace("GROUP BY", "AND p.brand = 'Maple & Co' GROUP BY")))
+    scripted_gateway.always(Step.COMPOSER, composer_reply(f"Maple & Co earned {maple:,.2f}.", "Revenue"))
     (result,) = run_scenarios(shipped("smoke-revenue-by-brand")).scenarios
     assert result.status == "fail"
     assert [c.name for c in result.all_checks() if c.status == "fail"] == ["states revenue 2025 (Nordic Peak)"]

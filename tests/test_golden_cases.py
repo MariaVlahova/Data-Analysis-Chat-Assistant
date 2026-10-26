@@ -13,7 +13,11 @@ from tests.agent_support import composer_reply, guard_reply, sql_reply
 
 pytestmark = pytest.mark.golden
 CASES = {case.id: case for case in load_golden()}
-REVENUE_2025 = "SELECT SUM(oi.sale_price) AS revenue FROM order_items oi WHERE EXTRACT(YEAR FROM oi.created_at) = 2025"
+# The definition of revenue is in it (plan 12, D2): a query without it is sent back to the repair step, and the oracle's repair is the right query.
+REVENUE_2025 = (
+    "SELECT SUM(oi.sale_price) AS revenue FROM order_items oi "
+    "WHERE oi.status NOT IN ('Cancelled', 'Returned') AND EXTRACT(YEAR FROM oi.created_at) = 2025"
+)
 
 
 def score(offline, samples, **options):
@@ -142,7 +146,9 @@ def test_the_ceos_figure_never_reaches_a_managers_answer_and_the_case_still_pass
 def test_the_name_of_another_brand_in_the_answer_fails_the_scope_check_and_the_case(offline_eval):
     case = CASES["rev-monthly-alice"]
     other = offline_eval.harness.macros.other_brand(offline_eval.harness.user("alice").brands)
-    sample = play_wrong(offline_eval, case, composer=composer_reply(f"Revenue by month, and {other} did better.", "Revenue"))
+    figure = offline_eval.harness.reference(case.turns[0], offline_eval.harness.user("alice")).values[0]
+    # It states a figure of the data, so it is an answer about the data (plan 12, A3) and is kept; the other brand in it is what the check must find.
+    sample = play_wrong(offline_eval, case, composer=composer_reply(f"The best month brought in {figure:,.2f}, and {other} did better.", "Revenue"))
     (verdict,) = score(offline_eval, [sample]).verdicts
     assert not verdict.passed and "i3_own_brands_only" in verdict.failed and "golden_forbids" in verdict.failed
     assert other in verdict.failed["i3_own_brands_only"]
@@ -158,7 +164,8 @@ def test_a_turn_the_app_treats_as_another_kind_fails_the_outcome_check(offline_e
 
 def test_an_answer_without_the_notice_the_case_requires_fails_its_wording_check(offline_eval):
     case = CASES["report-q1-alice"]
-    sample = play_wrong(offline_eval, case, composer=composer_reply("Revenue by brand is in the table.", "Q1"))
+    figure = offline_eval.harness.reference(case.turns[0], offline_eval.harness.user("alice")).values[0]
+    sample = play_wrong(offline_eval, case, composer=composer_reply(f"Revenue for the quarter was {figure:,.2f}.", "Q1"))  # a figure of the data, and no action items
     (verdict,) = score(offline_eval, [sample]).verdicts
     assert "golden_states" in verdict.failed and "action_items" in verdict.failed["golden_states"]
 

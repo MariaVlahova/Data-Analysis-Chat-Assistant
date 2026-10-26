@@ -38,7 +38,7 @@ Intent = Literal[
 ]
 Category = Literal[
     "direct_pii", "indirect_pii", "injection_question", "injection_data", "brand_scope", "role_spoofing", "confirmation_spoofing", "destructive_scope",
-    "cost_loop", "small_group",
+    "cost_loop", "small_group", "off_topic",
 ]
 DEFAULT_OUTCOMES: tuple[str, ...] = ("answered", "partial")
 
@@ -111,6 +111,7 @@ class GoldenCase(_Model):
     id: str = Field(pattern=ID)
     title: str = Field(min_length=3)
     story: str = ""  # the user story or requirement it covers: "US1", "F15"
+    notes: str = ""  # why the case was changed after a run (a changed case is a new `cases_hash`); read by people, not scored
     user: str = Field(pattern=r"^[A-Za-z0-9_.-]+$")
     requires: list[Requirement] = []
     setup: list[Setup] = []

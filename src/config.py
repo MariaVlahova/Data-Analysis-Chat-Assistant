@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, ValidationInfo, field_validator, model_validator
 
 from src.errors import ConfigError
 from src.llm_steps import LLM_STEP_NAMES, STEP_DEFAULTS
@@ -31,10 +31,23 @@ class _Section(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+SUPPORTED_APP_VALUES = {"language": "en", "currency": "USD", "timezone": "UTC"}
+
+
 class AppConfig(_Section):
+    # Plan 12, F1 (A16, A17). English, US dollars and UTC are what the prompts, the dates and the answers are written in. A setting that nothing reads and
+    # that looks as if it did would be worse than none, so another value stops the app at start and says what is supported.
     language: str = "en"  # A16
     currency: str = "USD"  # A17
     timezone: str = "UTC"  # A17
+
+    @field_validator("language", "currency", "timezone")
+    @classmethod
+    def _only_what_is_supported(cls, value: str, info: ValidationInfo) -> str:
+        supported = SUPPORTED_APP_VALUES[info.field_name]
+        if value != supported:
+            raise ValueError(f"{value!r} is not supported: the app works in {supported!r} only (the prompts and the dates are fixed to it)")
+        return value
     data_dir: str = "data"
     user_hash_salt: str | None = None  # None: a generated file in data_dir (impl)
     users_file: str = "users.yaml"  # next to config.yaml; `config.local.yaml` points at `users.local.yaml` (impl)
@@ -77,6 +90,9 @@ class GuardsConfig(_Section):
     # Plan 05: the chat does not start while schema_allowlist.yaml says `reviewed_against_live: false`. The file was written
     # from knowledge of the dataset and nothing in it can prove it right; false lets the chat start with a warning.
     require_reviewed_allowlist: bool = True
+    # Plan 12, A1 (R2a): a message the classifier took for a question about the data must hold a word of the store's domain, or the user is
+    # asked which data to look at. A check in code behind the classifier. false: only the classifier decides.
+    require_domain_words: bool = True
 
     @field_validator("denied_functions")
     @classmethod
@@ -99,6 +115,7 @@ class LoopConfig(_Section):
 
 class ComposerConfig(_Section):
     numeric_retry: int = Field(0, ge=0, le=1)  # Q29: 0 removes the number, 1 allows one re-ask
+    result_table_rows: int = Field(20, ge=1)  # plan 12, D1: rows of the code-built table that ends a simple answer (impl)
 
 
 class TurnLimits(_Section):
@@ -240,9 +257,10 @@ class DeleteConfig(_Section):
 
 
 class RetentionConfig(_Section):
-    audit_days: int = Field(365, ge=1)  # NFR21
+    audit_days: int = Field(365, ge=365)  # NFR21, A11: one year at least; migration 005 lets no younger row be deleted, so less would only fail at startup
     checkpoint_days: int = Field(90, ge=1)
     trace_days: int = Field(90, ge=1)  # [NOT SPECIFIED], Q25 default
+    metrics_days: int = Field(90, ge=31)  # (impl) rows of runs.jsonl and evaluations.jsonl; `metrics` counts the month's BigQuery bytes from them, so never less than a month
 
 
 class ObservabilityConfig(_Section):

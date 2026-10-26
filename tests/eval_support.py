@@ -133,6 +133,12 @@ class Offline:
         """The text of a correct Composer: the reference figures, and whatever the turn says must be in the answer."""
         macros = self.harness.macros
         parts = ["Here are the figures: " + ", ".join(f"{value:,.2f}" for value in values) + "." if values else NO_DATA]
+        if not values:
+            # A model that reads its results states what it was given (an answer that states no value of the data is replaced, plan 12, A3): a turn with no
+            # reference of its own, such as a follow-up that runs the default query, has the figure in its prompt.
+            given = _FIRST_REVENUE.search(prompt)
+            if given:
+                parts = [f"Here is the figure: {given.group(1)}."]
         if turn.says or turn.says_any:
             parts += [macros.expand_text(text, brands) for text in (turn.says or turn.says_any[:1])]
         if "action_items" in turn.must_state:
@@ -203,7 +209,18 @@ class Offline:
 
 # faults, through the real gateway --------------------------------------------------------------------------------------------------------------------
 
-REVENUE_2025 = "SELECT SUM(oi.sale_price) AS revenue FROM order_items oi WHERE EXTRACT(YEAR FROM oi.created_at) = 2025"
+# Revenue as the glossary defines it: plan 12 (D2) sends back a revenue query that does not leave out cancelled and returned items.
+REVENUE_2025 = (
+    "SELECT SUM(oi.sale_price) AS revenue FROM order_items oi "
+    "WHERE oi.status NOT IN ('Cancelled', 'Returned') AND EXTRACT(YEAR FROM oi.created_at) = 2025"
+)
+_FIRST_REVENUE = re.compile(r'"revenue": (-?[0-9][0-9.]*)')
+
+
+def revenue_in_results(contents: str) -> dict:
+    """The Composer of a model that reads its results: it states the first revenue figure it was given (an answer that states no value of the data is replaced, plan 12, A3)."""
+    match = _FIRST_REVENUE.search(contents)
+    return composer_reply(f"Your revenue for the year was {match.group(1)}." if match else "Your revenue for the year is in the table above.", "Revenue")
 
 
 class _SchemaModels:
@@ -215,7 +232,8 @@ class _SchemaModels:
         name = getattr(getattr(config, "response_schema", None), "__name__", "")
         if name not in self._owner.replies:
             raise AssertionError(f"SchemaClient has no reply for the schema {name!r}")
-        return reply_for(json.dumps(self._owner.replies[name]))
+        reply = self._owner.replies[name]
+        return reply_for(json.dumps(reply(str(contents)) if callable(reply) else reply))
 
     def list(self):
         return []
@@ -225,14 +243,15 @@ class SchemaClient:
     """A fake SDK client that answers by the schema a step asks for, so the real gateway, with its retries, breaker and chaos, can run a whole turn whatever
     order the steps come in (a repair or a re-ask changes the order, and a queue of replies would not survive that). It has what `LLMGateway` needs of
     `genai.Client` (`models.generate_content`, `models.list`) and nothing else: faults are injected by `Chaos`, not by rules on the client. `replies` is a plain
-    dict a test may change between turns: the Input Guard's reply, for one, decides which kind of request the turn is."""
+    dict a test may change between turns: the Input Guard's reply, for one, decides which kind of request the turn is. A reply may be a function of the prompt's
+    contents, which is how the Composer states a figure of the result it was given."""
 
     def __init__(self) -> None:
         self.requests: list = []  # (model, config) of every call
         self.models = _SchemaModels(self)
         self.replies: dict[str, Any] = {
             "InputGuardOut": guard_reply(standalone="What was my revenue in 2025?"), "SqlOut": sql_reply(REVENUE_2025),
-            "ComposerOut": composer_reply("Your revenue for the year is in the table above.", "Revenue"), "PlanOut": plan_reply("Revenue in 2025"),
+            "ComposerOut": revenue_in_results, "PlanOut": plan_reply("Revenue in 2025"),
             "EvidenceOut": {"enough": True, "missing": []},
         }
 

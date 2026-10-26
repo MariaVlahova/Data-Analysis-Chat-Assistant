@@ -4,9 +4,11 @@ It answers questions about the data structure (F5), anchors "up-to-date" to the 
 holds the brand list the startup check compares `users.yaml` with (S1). Metadata calls are free. Two small
 queries (latest date, brand list) go through `SafeQueryRunner` like every other query.
 
-Cached under `data/cache/` (`schema.json`, `brands.json`) and refreshed when older than 24 hours or on
+Cached under `data/cache/` (`schema.json`, `brands.json`, `product_words.json`) and refreshed when older than 24 hours or on
 `doctor --refresh`. If BigQuery cannot be reached, a saved copy is used and the caller is told. With no saved
-copy there is nothing to check against, so loading fails closed (NFR15).
+copy there is nothing to check against, so loading fails closed (NFR15). The product categories and departments (plan 12, A1: words
+that tell the Input Guard a message is about the store) are the exception: they only help, so a failure to read them leaves the list
+empty and never stops the chat.
 
 Which columns the agent may see comes from the allow-list (plan 05, `schema_allowlist.yaml`). Until a policy is
 attached, `overview()` and `prune()` refuse to list anything: a column that is not allow-listed does not exist.
@@ -35,10 +37,12 @@ TABLES = REQUIRED_TABLES  # one list of the dataset's tables, kept in the allow-
 CACHE_DIR_NAME = "cache"
 SCHEMA_FILE = "schema.json"
 BRANDS_FILE = "brands.json"
+PRODUCT_WORDS_FILE = "product_words.json"
 CACHE_VERSION = 1
 CACHE_MAX_AGE = timedelta(hours=24)  # a copy younger than this is used without calling BigQuery
 CACHE_FALLBACK_MAX_AGE = timedelta(days=7)  # BigQuery down: the oldest copy still trusted (impl)
 BRAND_ROW_LIMIT = 100_000  # the full brand list is far above the 1000-row cap meant for answers
+PRODUCT_WORD_LIMIT = 10_000  # distinct (category, department) pairs read; the real dataset has a few dozen
 STALE_DATA_DAYS = 7  # A5: past this, the answer says the data ends earlier than today
 CLOCK_SKEW = timedelta(minutes=5)  # a cache dated further ahead than this is not trusted
 
@@ -85,6 +89,7 @@ class SchemaCatalog:
     checked_at: datetime  # when the schema was last read from BigQuery
     brands_checked_at: datetime
     policy: ColumnPolicy | None = None
+    product_words: frozenset[str] = frozenset()  # product categories and departments: words the Input Guard accepts as "about the store" (plan 12, A1)
 
     # allow-list ----------------------------------------------------------------------------------
     def with_policy(self, policy: ColumnPolicy) -> "SchemaCatalog":
@@ -205,6 +210,12 @@ class _BrandsPart:
     checked_at: datetime
 
 
+@dataclass(frozen=True)
+class _ProductWordsPart:
+    words: frozenset[str]
+    checked_at: datetime
+
+
 def googlesql_type(field_type: str, mode: str = "NULLABLE") -> str:
     name = _GOOGLESQL_TYPES.get(field_type.upper(), field_type.upper())
     return f"ARRAY<{name}>" if mode == "REPEATED" else name
@@ -250,6 +261,19 @@ def _schema_from_cache(data: dict[str, Any] | None) -> _SchemaPart | None:
         return _SchemaPart(tables, sizes, date.fromisoformat(data["latest_date"]), _aware(data["checked_at"]))
     except (KeyError, TypeError, ValueError, AttributeError):
         log.warning("ignoring the cache file %s: unexpected content", SCHEMA_FILE)
+        return None
+
+
+def _product_words_from_cache(data: dict[str, Any] | None) -> _ProductWordsPart | None:
+    if data is None:
+        return None
+    try:
+        words = data["words"]
+        if not isinstance(words, list) or not all(isinstance(w, str) for w in words):
+            raise TypeError("words must be a list of strings")
+        return _ProductWordsPart(frozenset(words), _aware(data["checked_at"]))
+    except (KeyError, TypeError, ValueError):
+        log.warning("ignoring the cache file %s: unexpected content", PRODUCT_WORDS_FILE)
         return None
 
 
@@ -316,6 +340,38 @@ def _fetch_brands(safe: SafeQueryRunner, now: datetime) -> _BrandsPart:
             fix=f"Raise BRAND_ROW_LIMIT in src/data_access/catalog.py (now {BRAND_ROW_LIMIT}).",
         )
     return _BrandsPart(frozenset(str(brand) for brand in outcome.df["brand"]), now)
+
+
+def _fetch_product_words(safe: SafeQueryRunner, tables: dict[str, list[ColumnInfo]], now: datetime) -> _ProductWordsPart:
+    """The distinct product categories and departments. A dataset without those columns has none (a live column list is the truth)."""
+    if not {"category", "department"} <= {column.name for column in tables.get("products", [])}:
+        return _ProductWordsPart(frozenset(), now)
+    outcome = safe.run(SystemQuery(
+        f"SELECT DISTINCT category, department FROM {safe.table_ref('products')}", max_rows=PRODUCT_WORD_LIMIT,
+    ))
+    words = {str(value).strip() for column in ("category", "department") for value in outcome.df[column] if value is not None and str(value).strip()}
+    return _ProductWordsPart(frozenset(words), now)
+
+
+def _load_product_words(
+    safe: SafeQueryRunner, tables: dict[str, list[ColumnInfo]], cache_dir: Path, dataset: str, *, refresh: bool, outage: "_Outage", now: datetime,
+) -> frozenset[str]:
+    """The category and department words, from the saved copy when it is under 24 hours old. Never raises: they are an aid for the Input
+    Guard (a user is asked one question more when a word is missing), so when they cannot be read the list is the saved copy, or empty."""
+    cached = _not_from_the_future(_product_words_from_cache(_read_json(cache_dir / PRODUCT_WORDS_FILE, dataset)), PRODUCT_WORDS_FILE, now)
+    if cached is not None and not refresh and not _is_stale(cached.checked_at, now):
+        return cached.words
+    if not outage.down:
+        try:
+            fresh = _fetch_product_words(safe, tables, now)
+        except Exception as exc:  # noqa: BLE001 - optional, see above
+            log.warning("could not read the product categories, continuing without a fresh list: %s", crash_summary(exc))
+        else:
+            _write_json(cache_dir / PRODUCT_WORDS_FILE, {
+                "version": CACHE_VERSION, "dataset": dataset, "checked_at": fresh.checked_at.isoformat(), "words": sorted(fresh.words),
+            })
+            return fresh.words
+    return cached.words if cached is not None and now - cached.checked_at <= CACHE_FALLBACK_MAX_AGE else frozenset()
 
 
 @dataclass
@@ -440,8 +496,10 @@ def load_catalog(
 
         brands = _refresh(brands, lambda: _fetch_brands(safe, now), save_brands, "brand list", warnings, now, outage)
 
+    product_words = _load_product_words(safe, schema.tables, cache_dir, dataset, refresh=refresh, outage=outage, now=now)
     catalog = SchemaCatalog(
         tables=schema.tables, brands=brands.brands, latest_date=schema.latest_date,
         table_bytes=schema.table_bytes, checked_at=schema.checked_at, brands_checked_at=brands.checked_at,
+        product_words=product_words,
     )
     return CatalogLoad(catalog, tuple(warnings))

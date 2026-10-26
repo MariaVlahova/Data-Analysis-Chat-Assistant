@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 from src.agent.boundary import node
 from src.agent.deps import Deps
-from src.agent.prompts.templates import format_summary, planner_prompt
+from src.agent.prompts.templates import format_summary, planner_prompt, rows_placeholder
 from src.agent.state import Plan, SubQuestion, TurnState
 from src.errors import LLM_FAILURE_KINDS, AgentError
 from src.guards.allowlist import Allowlist
@@ -131,6 +131,7 @@ def make_planner(deps: Deps):
                 "done": plan_lines(existing, results),
                 "missing": state.get("evidence", {}).get("missing", []),
                 "summaries": [f"{sid}: {format_summary(r['guarded'])}" for sid, r in results.items() if r.get("guarded")],
+                "summaries_debug": [f"{sid}: {rows_placeholder(sid, r['guarded'])}" for sid, r in results.items() if r.get("guarded")],  # for the exchange file
             }
         parts = planner_prompt(
             question=standalone, intent=state.get("intent") or "why_question", schema_overview=deps.catalog.overview(),

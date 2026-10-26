@@ -286,8 +286,8 @@ flowchart TD
 - **Source:** (Phase1 3.9). Metrics: task success, guard blocks, PII at output, cost per question. Owner decision, 2026-10-22: Langfuse. The owner considered LangSmith (the "langsmit" note) and rejected it.
 ### 3.13 Quality checks and evaluation [PROPOSED]
 - **Choice:** Three test layers: free code checks, checks against analyst answers, then an AI judge.
-- **Why:** Cheap checks run first. One PII leak fails the whole run. The judge never grades its own model.
-- **Rejected:** Grading SQL by string match; self-grading.
+- **Why:** Cheap checks run first. One PII leak fails the whole run. The judge should not grade its own model. In the prototype it often must: the local model answers every step, and Gemini with `llm.pro_enabled: false` judges with Flash, the model that answered. `evaluation.allow_self_judge: true` (the default) lets it judge anyway and marks every result "not independent"; `false` refuses (impl).
+- **Rejected:** Grading SQL by string match; self-grading that is not marked as such.
 - **Revisit if:** the judge disagrees with human labels.
 - **Data lives in:** `eval/datasets/` (golden test set of 100-200 cases, attack tests, about 50 human labels).
 - **Path and memory checks (impl, 2026-10-25):** The free code checks also read how a turn ran, not only what it said. *Sequence and handoff accuracy:* the steps ran in an order the design allows, each guard ran before what it guards, the route follows what the Input Guard decided, the loops stay inside their limits, the plan that ran is the plan that was made, and the set a user confirmed is the set they were shown. *State drift and memory consistency:* after each turn the saved state belongs to that turn, the user and the scope never change, and the history, the last answer and the shown customer labels change only as designed, also after a restart. They run on every turn of every suite, and scripted multi-turn cases (`trajectories.yaml`) add the paths and memories a case expects.
@@ -352,19 +352,19 @@ flowchart TD
 | A8 | About 50 users and 99.5% availability | Phase1 6, row 9 | Sizing changes | Q30 |
 | A9 | Production trios: one per line, up to about 10k, in English. Analysts review a few dozen weekly. | Phase1 6, row 10 | Index changes, or the learning loop stalls | Q9, Q19 |
 | A10 | Withdrawn (owner decision, 2026-10-22): there is no persona editing or approval flow. | Phase1 6, row 11 | None | Q26 |
-| A11 | Transcripts 90 days, audit log 1 year | Phase1 6, row 12 | Storage and privacy rules change | Q17 |
+| A11 | Transcripts 90 days, audit log 1 year (purged at startup after a year, never less: plan 12) | Phase1 6, row 12 | Storage and privacy rules change | Q17 |
 | A12 | Withdrawn (owner decision, 2026-10-22): there is no per-user "My style". | Phase1 6, row 13 | None | None |
 | A13 | The dataset is synthetic, so free-tier Gemini terms are fine | Phase1 3.2 | Real data would need Vertex AI | Q18 |
 | A14 | The listed Gemini model IDs exist at build time | Phase1 intro | Routing config breaks | Q10 |
 | A15 | Confirmed: the Golden Bucket does not exist. We seed a small set of our own trios. | Client Q&A | None, the client confirmed it | Q9 |
-| A16 | Questions and answers are in English only | Not stated | Guards and glossary miss other languages | Q34 |
-| A17 | Currency is USD and time zone is UTC | Not stated | Wrong numbers or periods | Q6 |
+| A16 | Questions and answers are in English only (another `app.language` stops the app at start: plan 12; a question in another language is not detected) | Not stated | Guards and glossary miss other languages | Q34 |
+| A17 | Currency is USD and time zone is UTC (another `app.currency` or `app.timezone` stops the app at start: plan 12) | Not stated | Wrong numbers or periods | Q6 |
 | A18 | The reviewer has a Google Cloud project and a Gemini key | Not stated | Prototype does not run | Q14 |
 | A19 | One user at a time on one machine in the prototype | Not stated | SQLite locking issues | None |
 | A20 | Saved reports hold no PII and record their conversation ID | Not stated | PII in storage, or "this conversation" delete fails | Q5 |
 | A21 | The dataset has no free-text cells with PII | Not stated | Value scanning becomes critical | Q11 |
 | A22 | Another team owns data governance, ingestion and data modeling | Client Q&A | We must design the ingestion side | Q40 |
-| A23 | Every order item joins to `products.brand`, so the brand filter covers all data | Not stated | Some rows escape the brand filter | Q4 |
+| A23 | Every order item joins to `products.brand`, so the brand filter covers all data. Restated 2026-10-26: not quite. `doctor` counts 139 of 181,777 order items (0.08%) on the real dataset whose product has no brand (technical-explanation.md, section 9). They belong to no brand manager: the scope views hide them from managers (fail closed) and only the CEO sees them. | Not stated; `doctor` | None escape the filter. Managers' totals leave them out; a CEO answer by brand shows them as "(no brand)", with a notice that says what that is (plan 12) | Q4, Q45 |
 | A24 | Brand lists are small and change rarely, so a config file is enough | Not stated | The prototype mapping goes stale | Q39 |
 ## 6. Where is the data?
 | Data | Stored in (production -> prototype) | Contains PII? | Written by -> read by | How long we keep it |
@@ -395,13 +395,13 @@ flowchart TD
 | # | Brief requirement | Prototype or design-only | Covered in section | Fit |
 |---|---|---|---|---|
 | 1 | Use Golden Bucket trios with BigQuery | Design-only | 3.3 | Full |
-| 2 | No PII, analysis only, own brands | Prototype | 3.4, 3.5 | Full |
+| 2 | No PII, analysis only, own brands | Prototype | 3.4, 3.5 | Full. The Input Guard model decides what counts as an analysis question, and three code checks stand behind it (plan 12, built 2026-10-26): a word of the store's domain in the user's own text, a query must read a table (`NO_DATA_TABLE`), and an answer must state a value of the data (`ANSWER_NOT_FROM_DATA`). If every model step is fooled, off-topic text can still sit next to real figures from a scoped query; code cannot judge free text. |
 | 3 | Confirm before deleting saved reports | Prototype | 3.6 | Full |
 | 4.1 | Remember each user's preferences | Out of scope (owner decision, 2026-10-22) | 3.7 | Not covered, by choice. |
 | 4.2 | System learns from past interactions | Design-only | 3.8 | Full |
 | 5 | Self-correct errors, survive outages, control cost | Prototype | 3.10, 3.11 | Full |
 | 6 | Evaluate quality, intent and user experience | Design-only | 3.13 | Full |
-| 7 | Metrics and debugging of failures | Prototype | 3.12 | Full |
+| 7 | Metrics and debugging of failures | Prototype | 3.12 | Full. With `--debug-prompts` the message exchange of a turn (what was sent to the model, what came back) is kept beside its trace, without result rows and without an answer the Output Guard held back; `trace --exchange` and `trace --conversation` show it (plan 12, built 2026-10-26). |
 | 8 | Non-developers change tone without redeploy | Out of scope (owner decision, 2026-10-22) | 3.9 | Not covered, by choice. One static persona file; a tone change is a code change. |
 ### 7.2 Deliverables
 - Architecture diagram: partial. It is text art, not Mermaid. The delete shortcut is missing.
@@ -417,9 +417,9 @@ flowchart TD
 | D1 Architecture diagram | [architecture.md](architecture.md): Mermaid diagrams (production design, request path, the graph as built), the delete-or-save shortcut, a service table, the corrections list. |
 | D2 Technical explanation | [technical-explanation.md](technical-explanation.md): items 2.1, 2.2, 2.3 and 2.5. |
 | D3 Setup and example run | The [README](../README.md): three ways to run it, and a real example run (local model and generated sample data). |
-| D4 Prototype and CLI | Built and tested offline (plans 01 to 10). Run on real BigQuery with the local model on 2026-10-24 and 25 (the live schema and brand checks pass, and the full evaluation ran: see technical-explanation.md section 1). Not yet run on Gemini. The plans' "Still to do" sections were written before those runs and are not updated. |
-| D5 Public repository | The repository is public on GitHub. The documents of plan 11 are pushed only after the owner approves. |
-| D6 Framework choice and experience | Written in section 2 of the technical explanation. The experience statement ("experienced") is the author's answer of 2026-10-25 (Q8). |
+| D4 Prototype and CLI | Built and tested offline (plans 01 to 10). Run on real BigQuery with the local model on 2026-10-24 and 25 (the live schema and brand checks pass, and the full evaluation ran: see technical-explanation.md section 1). Not yet run on Gemini: the author's free quota ran out. Gemini is the default model service and is chosen by config (`app.environment`, `OPSFLEET_ENV`), so the reviewer can run it with their own key. The plans' "Still to do" sections were written before those runs and are not updated. |
+| D5 Public repository | The repository is public on GitHub. The documents of plan 11 are on `master` (pull request #12, merged 2026-10-26). |
+| D6 Framework choice and experience | Written in section 2 of the technical explanation. The level ("experienced") is the author's answer of 2026-10-25 (Q8). The projects named with it were taken from the author's CV on 2026-10-26, at the author's request. |
 ### 7.3 Agent capabilities and dataset
 - Customer behaviour (top customers, total spend): covered, with a fake ID per session.
 - Product performance and comparison: covered by the Planner.
@@ -533,6 +533,7 @@ This section is our own opinion, not a fact from the sources.
 | Q42 | **Access:** Which roles exist besides brand manager and CEO (analyst, admin)? | Analyst and admin, plus CEO | OpsFleet client | P2 |
 | Q43 | **Golden Bucket:** Which fields does our trio format have? | Question, SQL, report, notes, tables, brands, status, version | Us | P1 |
 | Q44 | **Caching:** Beyond BigQuery's own repeat-query cache, is a cross-user query-result cache worth the staleness risk, and for how long? | No app-level query cache; rely on BigQuery's own (3.15) | Us | P2 |
+| Q45 | **Access:** Who owns the order items whose product has no brand (139 of 181,777 in the real dataset, A23)? | Nobody: brand managers do not see them, the CEO does. If someone should, give them an explicit flag beside `all_brands`. | OpsFleet client | P2 |
 ## 11. Next documents
 - The PRD should use: sections 1, 3.6, 3.9, 4, 5, 7, and the OpsFleet client questions in section 10.
 - The architecture document should use: sections 2, 3, 4, 5, 6, 8 and 9.

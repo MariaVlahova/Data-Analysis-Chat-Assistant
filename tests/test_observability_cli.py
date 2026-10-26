@@ -110,7 +110,7 @@ def test_slash_trace_with_an_unknown_id_says_so_and_the_chat_goes_on(config_path
     result = chat(config_path, "alice", "/trace deadbeef\n/trace ../x\n/trace a b\n/trace --nope\n/quit\n")
     assert result.exit_code == 0 and "Traceback" not in result.output
     assert result.output.count("No trace found") == 2
-    assert result.output.count("Usage: /trace [id] [--raw]") == 2
+    assert result.output.count("Usage: /trace [id] [--raw | --exchange]") == 2
     assert "Goodbye" in result.output
 
 

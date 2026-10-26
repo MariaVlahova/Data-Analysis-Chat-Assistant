@@ -29,7 +29,7 @@ The client asked the prototype to cover four of the eight requirements [DECIDED]
 | 4.1 User memory | **Out of scope** (owner decision). |
 | 4.2 System learning | **Design.** |
 | 5. Resilience and graceful errors | **Built.** Typed errors, repair loop, retries, circuit breaker, fallback model, `--chaos`. |
-| 6. Quality assurance | **Design**, with a stand-in: a pytest suite, 16 golden cases, 25 attacks, chaos runs, an advisory AI judge. |
+| 6. Quality assurance | **Design**, with a stand-in: a pytest suite, 16 golden cases, 27 attacks, chaos runs, an advisory AI judge. |
 | 7. Observability | **Built** locally: trace IDs, spans, a metrics row per turn, `/trace`, `/metrics`. The production stack is design. |
 | 8. Persona management | **Out of scope** (owner decision). One static file, `personas/default.yaml`. A tone change is a code change, so this requirement of the brief is not met. |
 
@@ -37,10 +37,10 @@ The client asked the prototype to cover four of the eight requirements [DECIDED]
 
 Read this before you trust a sentence in this repository.
 
-- **Tested offline:** 3,519 tests pass with no network and no keys (`python -m pytest`, about 10 minutes). 69 more are marked `live`: they need Google credentials or a Gemini key, skip without them, and have not been run against Google.
+- **Tested offline:** 4,004 tests pass with no network and no keys (`python -m pytest`, about 10 minutes). 69 more are marked `live`: they need Google credentials or a Gemini key, skip without them, and have not been run against Google.
 - **Run end to end on a local model and generated sample data:** yes. The example run below is real output.
 - **Run on real BigQuery, with the local model answering:** yes. On 2026-10-24 and 25 the app ran against the real dataset (`config.bigquery.yaml`): 61 turns, about 48 dry runs and queries, under 1 GB billed. `doctor` reads the live schema and finds that every allowed column exists and every live column is classified. The six brands of `users.bigquery.yaml` match the real brand list (2,756 brands). BigQuery rejected none of the generated SQL at the dry run. The full evaluation ran this way: 9 of 16 golden cases, 25 of 25 attacks, the chaos run, and every hard gate held.
-- **Run on Gemini:** **no.** The Gemini gateway is built and tested against a scripted client. The model IDs, a real structured call and the rate limits have not been checked against a live key.
+- **Run on Gemini:** **no, because the author's free Gemini quota ran out.** The brief asks for a Gemini model, and Gemini is the default: `config.yaml` and every environment except `local` use it. With no quota left, the live runs used a local model through the same gateway, graph and guards. Switching to Gemini is a setting, not a code change: put `GEMINI_API_KEY` in `.env` and run with `config.yaml`, or set `OPSFLEET_ENV=default` on any config (Paths C and D). The Gemini client is built and tested against a scripted client. The model IDs, a real structured call and the rate limits have not been checked against a live key; `doctor --live` checks the first two on yours.
 - **Not signed off by a person:** `schema_allowlist.yaml` still says `reviewed_against_live: false`. No one has agreed the PII split (Q11) or the customer-row rule (S7), and no one has tried to break `src/guards/`. With the default config (`config.yaml`) the chat **refuses to start** until the flag is set (see Path D). `config.bigquery.yaml` starts anyway and writes a warning to the log (not to the screen).
 - The plans' "Still to do" sections were written before the BigQuery runs and are not updated. [docs/technical-explanation.md](docs/technical-explanation.md) section 9 has the current list of live steps.
 
@@ -76,8 +76,8 @@ There are four ways to run the app. Pick one.
 |---|---|---|---|---|
 | **A. Local** | Generated sample data (DuckDB) | A model on your machine through an OpenAI-compatible server | LM Studio. No Google sign-in, no key, no cost. | **Verified end to end.** The example run comes from here. |
 | **B. Local model, real BigQuery** | `bigquery-public-data.thelook_ecommerce` | A model on your machine | LM Studio, and a Google Cloud project | **Verified**: the evaluation of 2026-10-25 ran this way |
-| **C. Gemini on sample data** | Generated sample data | Gemini | A Gemini key. No Google sign-in. | Built, **not run on a live key** |
-| **D. Gemini on real BigQuery** | `bigquery-public-data.thelook_ecommerce` | Gemini | A Gemini key and a Google Cloud project | Built, **not run with Gemini**. Two manual steps are needed first. |
+| **C. Gemini on sample data** | Generated sample data | Gemini | A Gemini key. No Google sign-in. | Built, **not run on a live key** (the author's free quota ran out). Path A with `OPSFLEET_ENV=default`. |
+| **D. Gemini on real BigQuery** | `bigquery-public-data.thelook_ecommerce` | Gemini | A Gemini key and a Google Cloud project | Built, **not run with Gemini** (the author's free quota ran out). The default config. Two manual steps are needed first. |
 
 ### Path A: local model, sample data
 
@@ -166,6 +166,7 @@ Secrets never go into `config.yaml`. A mistyped key in `config.yaml` stops start
 python -m src.cli.main chat --user alice            # a brand manager
 python -m src.cli.main chat --user ceo              # sees all brands
 python -m src.cli.main chat --user alice --debug    # log lines and tracebacks on screen
+python -m src.cli.main chat --user alice --debug-prompts   # keep the message exchange of each turn (masked, no result rows): /trace <id> --exchange shows it
 python -m src.cli.main chat --user alice --conversation conv-1a2b3c4d   # continue a conversation
 python -m src.cli.main chat --user alice --chaos harsh --chaos-seed 7   # inject faults on purpose; the same seed replays the run
 ```
@@ -173,7 +174,7 @@ python -m src.cli.main chat --user alice --chaos harsh --chaos-seed 7   # inject
 
 What you can ask: questions about sales, products and customers (a total, a ranking, a trend), "why" and comparison questions that need several queries, reports with insights and action items, and what data is available. Customers appear only as labels such as `Customer #48213`, never by name. You can also say "save that", "list my reports", "delete the reports mentioning X", "delete all the reports we made in this conversation" and "undo". A delete shows what it found and waits for your next line: `y` or `yes` for one report, `yes` for a short list, and `DELETE <n>` for "all" or ten or more. Anything else cancels. Every answer starts with how your question was read and which brands it covers, and ends with notes about anything that was hidden, cut or could not be answered.
 
-Inside the chat: `/help`, `/quit`, `/new` (new conversation), `/trace [id] [--raw]` (the steps of a turn, by default the last one) and `/metrics [--last N]` (totals and rates). You see your own turns; the CEO sees everyone's. Every error message ends with a trace ID. Outside the chat, the operator views (all users) are `python -m src.cli.main trace [ID]` and `python -m src.cli.main metrics [--last N]`.
+Inside the chat: `/help`, `/quit`, `/new` (new conversation), `/trace [id] [--raw]` (the steps of a turn, by default the last one), `/trace [id] --exchange` (what was sent to the model and what came back, step by step; only for a chat started with `--debug-prompts`), `/trace --conversation` (the turns of this conversation, each with its question) and `/metrics [--last N]` (totals and rates). You see your own turns; the CEO sees everyone's. Every error message ends with a trace ID. Outside the chat, the operator views (all users) are `python -m src.cli.main trace [ID] [--exchange]`, `python -m src.cli.main trace --conversation ID` and `python -m src.cli.main metrics [--last N]`.
 
 Two more commands, for whoever runs the prototype:
 
@@ -184,7 +185,7 @@ Tokens are logged everywhere: each model call is a `model call step=... tokens_i
 
 `--chaos mild|harsh` injects model errors (429, 503, timeouts, unusable JSON) into about 15% (mild) or 40% (harsh) of model calls, BigQuery errors into fewer BigQuery calls, and now and then a broken SQL query, to show that retries, the circuit breaker and the fallback model keep the chat alive. Without `--chaos-seed` a seed is drawn and printed in the banner. Injected faults replace the call, so they use no quota.
 
-Traces, logs and metrics are masked on a **best-effort** basis. A pattern scan replaces e-mails, phone numbers, US social security and employer tax IDs, and card numbers before anything is written. It does **not** find names, street addresses or a bare customer ID, so the design also keeps result rows, DataFrames, cell values and exception messages out of them, and people appear only as a hash. The question you type is stored (masked) in the trace. Prompts are not stored unless you start the chat with `--debug-prompts` (still masked). Trace files are deleted after 90 days (`retention.trace_days`); `runs.jsonl` rows hold counts and IDs only and are kept.
+Traces, logs and metrics are masked on a **best-effort** basis. A pattern scan replaces e-mails, phone numbers, US social security and employer tax IDs, and card numbers before anything is written. It does **not** find names, street addresses or a bare customer ID, so the design also keeps result rows, DataFrames, cell values and exception messages out of them, and people appear only as a hash. The question you type is stored (masked) in the trace. Prompts are not stored unless you start the chat with `--debug-prompts`. Then each step's fixed instructions go into the trace (masked), and the full message exchange of the turn goes to `data/traces/<id>.exchange.jsonl`: for each model attempt the instructions, the contents sent, the reply, the tokens and the error kind, masked. In the contents, **each query result is replaced by one line that names it** (`[rows of q1: 12 rows, columns brand, revenue; not stored]`), so no row is written; the Composer's draft is never written, and the answer is, only after the Output Guard has passed it (an answer it blocks is stored nowhere). Look at it with `/trace <id> --exchange`. Trace files and exchange files are deleted after 90 days (`retention.trace_days`); `runs.jsonl` rows hold counts and IDs only and are kept. The audit log is kept one year (`retention.audit_days`, 365 at least) and then purged at startup.
 
 The answer tone comes from one static persona file, `personas/default.yaml`. There is no persona editor, no per-user style and no switching.
 
@@ -206,6 +207,8 @@ Exit codes: `0` normal, `2` a startup problem (bad config, unknown user, no bran
 ## Example run
 
 Real output, captured on 2026-10-25 from a fresh clone, with the steps of Path A: sample data, and `qwen/qwen3-30b-a3b-2507` served by LM Studio. **This is not Gemini and not BigQuery.** The model is a 30B model on a laptop, so every turn took one to five minutes, and its wording is not what Gemini would write.
+
+**These captures were made before plan 12.** Since then a simple answer ends with its result as a table, built by the code from the guarded rows (the first answer below has none), and a draft that states no value of the data is replaced by the figures. The captures are kept as they were: a new run has not been made on a model.
 
 How it was captured: the chat read its lines from a pipe, which does not echo what is typed, so each typed line is put back after its `Name>` prompt, the way a terminal shows it. Trailing spaces were removed. Nothing else is changed, except two places marked `[trimmed]` or `[banner as above]`. The trace IDs are the real ones: any of them can be opened with `python -m src.cli.main trace <id>` on the machine that made them.
 
@@ -735,7 +738,7 @@ The evaluation scores the app itself: the golden cases against reference SQL, th
 
 ```bash
 python -m eval.run_golden  --config config.local.yaml   # 16 cases; --update-baseline (or --baseline-from RUN_DIR) writes eval/baseline.json for this setup
-python -m eval.run_attacks --config config.local.yaml   # 25 attacks; invariants I1 to I6 must hold for every one
+python -m eval.run_attacks --config config.local.yaml   # 27 attacks; invariants I1 to I6 must hold for every one
 python -m eval.run_chaos   --config config.local.yaml   # the random fault profiles, 5 turns each; the scripted faults run offline
 python -m eval.run_trajectory --config config.local.yaml   # 11 scripted conversations: the path through the graph, and the state and memory between turns (also after a restart)
 python -m eval.report --tests --config config.local.yaml   # the PRD section 9 table, measured from those runs and the offline suites
@@ -788,7 +791,7 @@ docs/                  architecture, technical explanation, PRD, decision record
 data/                  runtime files (git-ignored)
 ```
 
-Everything the app writes goes to `data/` (git-ignored): `db.sqlite3` (conversations, saved reports, the audit log and the checkpoints), `logs/app.log` (rotating, masked), `user_hash_salt`, `runs.jsonl` (one metrics row per question), `traces/` (one file per question) and `cache/` (the schema and brand list, 24 hours). If `data/db.sqlite3` was made by an older prototype, the app refuses to use it and tells you to move or delete it.
+Everything the app writes goes to `data/` (git-ignored): `db.sqlite3` (conversations, saved reports, the audit log and the checkpoints), `logs/app.log` (rotating, masked), `user_hash_salt`, `runs.jsonl` (one metrics row per question; rows older than 90 days are deleted at startup, and so are those of `evaluations.jsonl`), `traces/` (one file per question, and with `--debug-prompts` its exchange file) and `cache/` (the schema, the brand list and the product categories, 24 hours). If `data/db.sqlite3` was made by an older prototype, the app refuses to use it and tells you to move or delete it.
 
 ## Troubleshooting
 

@@ -48,7 +48,7 @@ def broken(step):
 @pytest.mark.parametrize("step", [Step.INPUT_GUARD, Step.PLANNER, Step.SQL_WRITE, Step.EVIDENCE_CHECK, Step.COMPOSER])
 def test_an_exception_in_a_model_step_ends_in_a_friendly_message_with_a_trace_id_and_the_chat_goes_on(rig, step):
     broken(step)(rig)
-    result = rig.ask("Why?")
+    result = rig.ask("Why did my revenue change?")
     assert result.outcome == "failed" and result.error.kind is ErrorKind.INTERNAL and "Something went wrong on my side" in result.text
     assert result.error.trace_id == rig.last_trace_id  # the ID the user gets is the stored one
     stored = json.dumps(rig.spans()) + json.dumps(rig.last_row)
@@ -82,7 +82,7 @@ def re_trace_id(value):
 
 def test_the_failing_step_is_named_in_the_trace(rig):
     broken(Step.SQL_WRITE)(rig)
-    rig.ask("Why?")
+    rig.ask("Why did my revenue change?")
     failing = [s for s in rig.spans() if s["status"] == "error"]
     assert {"llm.call", "sql_loop"} <= {s["name"] for s in failing} or "sql_loop" in {s["name"] for s in failing}
 
@@ -150,10 +150,10 @@ def test_a_follow_up_is_rewritten_so_the_later_steps_need_no_history(rig):
 
 def test_history_keeps_the_last_six_exchanges_with_each_answer_cut(rig):
     for n in range(8):
-        simple(rig, f"Question {n}")
-        rig.ask(f"Question {n}")
+        simple(rig, f"Revenue question {n}")
+        rig.ask(f"Revenue question {n}")
     history = values(rig)["history"]
-    assert [h["user"] for h in history] == [f"Question {n}" for n in range(2, 8)]
+    assert [h["user"] for h in history] == [f"Revenue question {n}" for n in range(2, 8)]
     assert all(len(h["assistant"]) <= 600 for h in history)
     simple(rig)
     rig.ask("Revenue by brand")
@@ -194,7 +194,7 @@ def test_a_why_turn_shows_the_planning_and_which_sub_question_is_running(rig):
     rig.gateway.queue(Step.SQL_WRITE, sql_reply(), sql_reply())
     rig.gateway.queue(Step.EVIDENCE_CHECK, {"enough": True, "missing": []})
     rig.gateway.queue(Step.COMPOSER, composer_reply(BODY))
-    rig.ask("Why?")
+    rig.ask("Why did my revenue change?")
     assert rig.progress[:4] == ["Understanding your question...", "Planning...", "Querying (1 of 2)...", "Querying (2 of 2)..."]
     assert rig.progress[-2:] == ["Checking the results...", "Writing the answer..."]
 

@@ -11,6 +11,7 @@ Steps, in order, all inside one fail-closed wrapper (Result Guard note, part E):
   S. small groups       a result about groups of customers loses the groups with fewer than `guards.k_anonymity`
                         customers (S7); if the group sizes cannot be checked the whole result is withheld
   D. cap                at most `guards.rows_to_model` rows are kept, after suppression
+  E. no brand           for an all-brands user, an empty `brand` cell is written `(no brand)` and the answer says what that is (A23)
 Then the summary (counts and min/max/sum, never rows), the notices the Composer must pass on, and one `guard.decision`.
 
 Fail closed: any exception, any cell type we do not handle, a query that is not the SQL Guard's own, or a run that takes
@@ -59,6 +60,10 @@ NOTICE_WITHHELD = "Group sizes could not be checked, so the result was withheld.
 NOTICE_CUSTOMER_LABELS = "Customer numbers are labels for this session only."
 NOTICE_CUSTOMER_SPEND_SCOPE = "Each customer's spend counts only purchases in your brands."  # S15
 NOTICE_VALUES_MASKED = "Some personal details inside text values were hidden."
+# A23 (plan 12, C1): a few order items have a product with no brand. The scope views inner-join the brand, so no brand manager sees them (fail closed); the CEO
+# does, as a group with an empty brand, which this names.
+NO_BRAND_LABEL = "(no brand)"
+NOTICE_NO_BRAND = "Some order items have no brand. Brand managers do not see them; they are counted here."
 
 
 def notice_groups_hidden(count: int, k: int) -> str:
@@ -150,13 +155,14 @@ class _Counts:
     ids_replaced: int = 0
     groups_hidden: int = 0
     rows_cut: int = 0
+    unbranded: int = 0  # empty `brand` cells written as NO_BRAND_LABEL (an all-brands user only)
 
     @property
     def first_rule(self) -> str | None:
         """The rule ID of the first change, or None when the rows went through untouched."""
         for rule, count in (("COLUMN_MASKED", self.columns_masked), ("VALUE_MASKED", self.values_masked),
                             ("IDS_REPLACED", self.ids_replaced), ("GROUPS_HIDDEN", self.groups_hidden),
-                            ("ROWS_CAPPED", self.rows_cut)):
+                            ("ROWS_CAPPED", self.rows_cut), ("NO_BRAND_LABELLED", self.unbranded)):
             if count:
                 return rule
         return None
@@ -373,9 +379,21 @@ class ResultGuard:
         if k_index is not None:  # S: remove the groups of fewer than k customers, before the cap
             survivors = [row for row, size in zip(rows, sizes) if size >= self._k]
             hidden, rows = len(rows) - len(survivors), survivors
+        if gq.scope_label == ALL_BRANDS_LABEL:  # E: only the user who sees every brand can meet an item that has none
+            self._label_unbranded(out_names, rows, counts)
         result = self._build(out_names, rows, masked_names, gq, counts, hidden=hidden, unseen=max(0, total_rows - len(df)))
         self._check_time(deadline)  # the summary and the notices count too
         return result, counts
+
+    @staticmethod
+    def _label_unbranded(names: list[str], rows: list[list[Any]], counts: _Counts) -> None:
+        """Write NO_BRAND_LABEL in every empty cell of a column called `brand`, after the small groups are gone (a hidden group is not counted)."""
+        for column in (index for index, name in enumerate(names) if fold(name) == "brand"):
+            for row in rows:
+                value = row[column]
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    row[column] = NO_BRAND_LABEL
+                    counts.unbranded += 1
 
     def _role(self, name: str, gq: GuardedQuery) -> Literal["masked", "k", "id", "plain"]:
         spelled = _spelled(name)
@@ -467,6 +485,8 @@ class ResultGuard:
             notices.append(notice_columns_masked(len(masked_names)))
         if counts.values_masked:
             notices.append(NOTICE_VALUES_MASKED)
+        if counts.unbranded:
+            notices.append(NOTICE_NO_BRAND)
         if hidden:
             notices.append(notice_groups_hidden(hidden, self._k))
         if gq.per_customer and shown:

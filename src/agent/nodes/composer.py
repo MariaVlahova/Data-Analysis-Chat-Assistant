@@ -14,7 +14,11 @@ Until the Output Guard has passed it, the text lives in `TurnRuntime.scratch`, n
 an answer the guard held back must not be stored anywhere, not even masked (plan 06).
 
 If the Composer cannot run (the model is down, the budget or the time is used up) or the numeric check leaves nothing, the code
-builds the answer from the guarded figures (`envelope.fallback_body`): degraded, said so, still true and still guarded.
+builds the answer from the guarded figures (`envelope.fallback_body`): degraded, said so, still true and still guarded. The same
+happens when a draft states nothing from the results at all (plan 12, A3): it is not an answer to a question about the data.
+
+A simple turn with one result ends with that result as a table the code builds from the guarded rows (plan 12, D1), so a short or
+summarising draft cannot leave out the figures that were asked for. The Composer's text is then the commentary.
 """
 from __future__ import annotations
 
@@ -22,14 +26,15 @@ from pydantic import BaseModel
 
 from src.agent.boundary import node
 from src.agent.deps import DRAFT, FINAL_TEXT, NOTES, TITLE, Deps, TurnRuntime
-from src.agent.envelope import fallback_body, has_answerable_result, is_partial, render_answer
-from src.agent.numeric_check import check_numbers, ground_values
+from src.agent.envelope import fallback_body, has_answerable_result, is_partial, render_answer, result_table
+from src.agent.numeric_check import RULE_NOT_FROM_DATA, check_numbers, ground_values, states_result_value
 from src.agent.prompts.locked_rules import LOCKED_DEFINITIONS, relevant_definitions
 from src.agent.prompts.templates import composer_prompt
-from src.agent.state import TurnState, error_record
+from src.agent.state import OK, TurnState, error_record
 from src.errors import MODEL_FALLBACK_KINDS, AgentError, ErrorKind
 from src.llm.routing import Step
 from src.observability import event, guard_decision
+from src.observability.exchange import record_answer
 
 NO_DATA_BODY = "I did not find any data for this question."
 MAX_TITLE = 80
@@ -54,6 +59,7 @@ def compose(deps: Deps, runtime: TurnRuntime, state: TurnState, rejected: tuple[
         persona_text=context.get("persona_text", ""),
         definitions=relevant_definitions(standalone, context.get("glossary_terms")), rejected_numbers=rejected,
         golden_report=context.get("trio_report", ""),  # an excerpt of one analyst report, for style only (plan 10)
+        table_follows=result_table(state, deps.settings.composer.result_table_rows) != "",
     )
     reply = deps.gateway.generate(
         Step.COMPOSER, system=parts.system, contents=parts.contents, schema=ComposerOut, budget=runtime.budget,
@@ -118,6 +124,7 @@ def make_numeric_check(deps: Deps):
         if draft is None:
             raise AgentError(ErrorKind.INTERNAL, detail="there is no draft to check")
         ground = _ground(state)
+        has_data = any(result.get("status") == OK and result.get("guarded") for result in state.get("results", {}).values())
         body, title, degraded, removed = draft["body"], draft["title"], draft["degraded"], 0
 
         if not degraded:
@@ -133,18 +140,26 @@ def make_numeric_check(deps: Deps):
                     if exc.kind not in MODEL_FALLBACK_KINDS:
                         raise  # the first draft's check stands
             event("numeric_check", matched=list(check.matched), removed=check.removed)
+            # A3: a draft that states no value of the data is no answer about the data, however it is worded. It is judged on what is
+            # left after the numeric check, and only when a result has data. A draft that already left nothing is replaced anyway.
+            off_data = not check.empty and has_data and not states_result_value(check.body, check.matched, state.get("results", {}))
             if check.removed:
                 guard_decision("numeric", "block", rule=ErrorKind.NUMERIC_UNGROUNDED.value, removed=check.removed)
-            else:
+            if off_data:
+                guard_decision("numeric", "block", rule=RULE_NOT_FROM_DATA)
+            elif not check.removed:
                 guard_decision("numeric", "pass")
             body, removed = check.body, check.removed
-            if check.empty:  # nothing useful is left: the figures come straight from the data instead
+            if check.empty or off_data:  # nothing useful is left, or none of it is from the data: the figures come straight from the data
                 body, degraded = fallback_body(state) or NO_DATA_BODY, True
+                if off_data:
+                    title = ""  # the model's title goes with its draft; the draft is stored nowhere
 
         if title and not check_numbers(title, ground, counted=[len(state.get("plan", {}).get("subquestions", []))]).clean:
             title = ""  # a title is model text too: one with a figure the data does not back is dropped, and a fallback is used
         text, notes = render_answer(
             state, body, title=title, numeric_removed=removed > 0, degraded=degraded, ground=_reading_ground(state, ground),
+            table="" if degraded else result_table(state, deps.settings.composer.result_table_rows),  # the fallback body has its tables already
         )
         runtime.hold(FINAL_TEXT, text)
         runtime.hold(TITLE, title)
@@ -164,6 +179,7 @@ def make_output_guard(deps: Deps):
         if text is None:
             raise AgentError(ErrorKind.INTERNAL, detail="there is no answer to check")
         checked = deps.output_guard.check(text)  # raises OUTPUT_BLOCKED: the text is gone, and is stored nowhere
+        record_answer(checked)  # `--debug-prompts`: the text the user will see, now that the guard has passed it (the exchange file, plan 12 B1)
         if title and deps.output_guard.scan(title):
             title = None  # a title that is not part of the answer is checked too, and dropped (a fallback is used) rather than stored
         return {"answer": checked, "title": title or None, "notices": notes}

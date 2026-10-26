@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from src.agent.boundary import node
 from src.agent.deps import COMPOSER_RESERVE, Deps
 from src.agent.nodes.planner import plan_lines
-from src.agent.prompts.templates import evidence_prompt, format_summary
+from src.agent.prompts.templates import evidence_prompt, format_summary, rows_placeholder
 from src.agent.state import ANSWERABLE, OK, TurnState
 from src.errors import MODEL_FALLBACK_KINDS, AgentError
 from src.llm.routing import Step
@@ -55,6 +55,7 @@ def make_evidence_check(deps: Deps):
                 plan_lines=plan_lines(plan, results),
                 status_lines=[f"{sid}: {result.get('status')}" for sid, result in results.items()],
                 summaries=[f"{sid}: {format_summary(result['guarded'])}" for sid, result in results.items() if result.get("guarded")],
+                summaries_debug=[f"{sid}: {rows_placeholder(sid, result['guarded'])}" for sid, result in results.items() if result.get("guarded")],
             )
             try:
                 reply = deps.gateway.generate(

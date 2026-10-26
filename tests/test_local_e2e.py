@@ -406,11 +406,15 @@ def test_the_chat_survives_injected_faults_on_the_sample_data(local_project, loc
     for step in (Step.SQL_WRITE, Step.SQL_REPAIR, Step.LAST_REPAIR):
         scripted_gateway.always(step, sql_reply(TOTAL))
     scripted_gateway.always(Step.INPUT_GUARD, guard_reply(standalone="What is my revenue?"))
-    scripted_gateway.always(Step.COMPOSER, composer_reply("Your revenue is shown here.", "Revenue"))
+    # It states the figure it was given: an answer that states no value of the data is replaced by the figures (plan 12, A3).
+    scripted_gateway.always(Step.COMPOSER, lambda call: composer_reply(
+        f"Your revenue is shown here: {re.search(r'revenue.: ([0-9.]+)', str(call.contents)).group(1)}." if re.search(r'revenue.: ([0-9.]+)', str(call.contents))
+        else "Your revenue is shown here.", "Revenue",
+    ))
     result = runner.invoke(
         app, ["chat", "--user", "carol", "--config", str(local_project / "config.yaml"), "--chaos", "harsh", "--chaos-seed", str(seed)],
         input="What is my revenue?\n/quit\n",
     )
     assert result.exit_code == 0, result.output
     assert f"seed {seed}" in result.output and "Traceback" not in result.output
-    assert "Your revenue is shown here." in result.output or "Trace ID" in result.output
+    assert "Your revenue is shown here" in result.output or "Trace ID" in result.output

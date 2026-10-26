@@ -5,8 +5,12 @@ A row says who did what and how it ended: the user hash, the action, a count, th
 and the idempotency key. It never holds report text, titles or IDs. `migrations/002` makes the table append-only with two
 triggers; production would use a Postgres role without UPDATE or DELETE and partition drops for the 1-year retention. (impl)
 
+Retention (plan 12, NFR21, A11): `migrations/005` lets a delete through only for a row older than 365 days, so a row is append-only for the whole year
+it must be kept. `purge_old_entries` deletes the rows older than `retention.audit_days` (never below 365) at startup, and writes one `audit_purged` row about it
+in the same transaction.
+
 The actions of plan 08 are `save`, `delete_requested`, `delete_confirmed`, `delete_cancelled`, `delete_stale`, `delete_executed`,
-`undo` and `purge`.
+`undo` and `purge`. The startup purge of the log itself (below) writes `audit_purged`.
 
 `write_entry` takes the connection of a transaction that is already open: an effect and its audit row commit together, and if
 the audit insert fails the effect rolls back. No effect happens without a record. `AuditLog.append` is for the events that
@@ -22,7 +26,7 @@ import re
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
@@ -65,6 +69,25 @@ def write_entry(conn: sqlite3.Connection, entry: AuditEntry, ts: str | None = No
          entry.trace_id, entry.turn_id, entry.idempotency_key, detail),
     )
     return True
+
+
+def purge_old_entries(path: Path, days: int, *, now: Callable[[], datetime] | None = None) -> int:
+    """Delete the audit rows older than `days` and add an `audit_purged` row (the count, the system user) in the same transaction, so a purge is on the record
+    it shortens. Returns how many rows were removed; no row is written when there was nothing to remove. The trigger of migration 005 refuses a row younger than
+    365 days whatever `days` says: this function cannot shorten the year, and a transaction that the trigger refuses is rolled back whole."""
+    moment = (now or now_utc)()
+    cutoff = iso(moment - timedelta(days=days))
+    with closing(open_connection(path)) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            removed = conn.execute("DELETE FROM audit_log WHERE ts < ?", (cutoff,)).rowcount
+            if removed:
+                write_entry(conn, AuditEntry("audit_purged", SYSTEM_USER, "ok", count=removed, detail=f"older than {days} days"), iso(moment))
+        except BaseException:
+            conn.rollback()
+            raise
+        conn.commit()
+    return removed
 
 
 class AuditLog:

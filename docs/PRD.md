@@ -176,7 +176,7 @@ Priority: P0 = prototype must have, P1 = prototype should have, D = design-only.
 | NFR28 | Runs on another machine | Setup instructions; Docker optional | [DECIDED] |
 | NFR29 | Who sees which data | Only the user's brands; the CEO sees all | [DECIDED] |
 
-IDs match decision.md section 4. Production-only targets (NFR8 daily budget, NFR10 scale, NFR20 alerts, NFR25 release safety, NFR26-27 quality and usability) stay in the architecture document.
+IDs match decision.md section 4. Production-only targets (NFR10 scale, NFR20 alerts, NFR25 release safety, NFR26-27 quality and usability) stay in the architecture document. NFR8 (daily budget) was first listed here as production-only; it is now built in the prototype as a switch that is off by default, because its amount is the client's (Q15).
 
 ## 8. Deliverables
 | # | Deliverable | Covered by plan |
@@ -232,7 +232,7 @@ We proceed with these defaults until the client answers otherwise.
 | A19 | One user at a time on one machine in the prototype |
 | A20 | Saved reports hold no PII and record their conversation ID |
 | A21 | The dataset has no free-text cells that carry PII (not verified; if wrong, value-level scanning becomes critical, not just column-level blocking) |
-| A23 | Every `order_items` row joins to `products.brand`, so the brand filter covers all order data; unjoined rows would escape the filter |
+| A23 | Every `order_items` row joins to `products.brand`, so the brand filter covers all order data. Restated 2026-10-26: 139 of 181,777 items (0.08%) on the real dataset have no brand. None escape the filter: they are hidden from brand managers and only the CEO sees them (decision.md A23, Q45) |
 | A24 | Brand lists are small and change rarely, so a config file (`users.yaml`) is enough for the prototype |
 
 A11 (retention) and A22 (another team owns ingestion) are carried in this PRD under NFR21 and the section 2 non-goals, respectively, rather than repeated as separate rows here.
