@@ -45,7 +45,14 @@ TEST_GROUPS: dict[str, tuple[str, ...]] = {
     "scope": ("tests/test_attack_offline.py", "tests/test_scope_users.py", "tests/test_compromised_model.py"),
     "crashes": ("tests/test_chaos_offline.py",),
     "delete": ("tests/test_delete_flow.py", "tests/test_restart_resume.py", "tests/test_duplicate_effects.py"),
+    "trajectory": ("tests/test_trajectory_checks.py", "tests/test_trajectory_contract.py", "tests/test_trajectory_offline.py"),
 }
+
+# Sequence and handoff accuracy, and state drift and memory consistency (`eval/trajectory.py`): the metrics behind the two rows of the table that the PRD does not name.
+PATH_METRICS = (
+    "seq_valid_path", "seq_guards_before_effects", "seq_route_follows_decision", "seq_loops_bounded", "handoff_plan_is_what_ran", "handoff_approved_was_shown",
+)
+DRIFT_METRICS = ("drift_identity_and_scope", "drift_no_stale_state", "drift_memory_carries_over")
 
 
 @dataclass
@@ -367,6 +374,26 @@ def table(data: Data, settings: Settings, tests: dict[str, Counts] | None, basel
     return rows
 
 
+def extra_rows(data: Data, tests: dict[str, Counts] | None) -> list[Row]:
+    """The rows that the PRD's section 9 does not have: sequence and handoff accuracy, and state drift and memory consistency (`eval/trajectory.py`). They are shown in a table
+    of their own, so the PRD's eleven rows stay as the owner wrote them. They are measured, and fail the report, like the others."""
+    describe = f"{sum(len(suite.verdicts.get('cases', [])) for suite in data.suites.values())} sample(s), {len(data.rows)} turn(s)"
+    note, tests_ok = _tests_note(tests, "trajectory")
+    rows: list[Row] = []
+    for metric, names, source in (
+        ("Execution-path violations: sequence and handoff accuracy", PATH_METRICS,
+         "the seq_* and handoff_* checks over every turn of every run; the contract and offline trajectory suites"),
+        ("State drift and memory consistency violations", DRIFT_METRICS,
+         "the drift_* checks over every conversation of every run; the contract and offline trajectory suites"),
+    ):
+        broken, scored = data.n_fail(*names), data.n_scored(*names)
+        rows.append(Row(
+            metric, "0",
+            (f"{broken} violation(s) in {scored} sample check(s) over {describe}" if broken is not None else "no run measured it") + f"; {note}",
+            _status(None if broken is None else broken == 0, tests_ok), source))
+    return rows
+
+
 def kind_stats(data: Data) -> list[dict[str, Any]]:
     """Per kind of turn: how many, the model calls, the time and the data read. For Q3 and Q30."""
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -405,7 +432,7 @@ def judge_summaries(data: Data) -> list[dict[str, Any]]:
 _STYLE = {MET: "green", NOT_MET: "bold red", NOT_MEASURED: "yellow", NO_BAR: "yellow"}
 
 
-def render(console: Console, data: Data, rows: list[Row]) -> None:
+def render(console: Console, data: Data, rows: list[Row], extra: list[Row] | None = None) -> None:
     setups = {f"{suite.kind}: {suite.verdicts['setup']['environment']} / {suite.verdicts['setup']['data']}, {suite.verdicts['setup']['model']}" for suite in data.suites.values()}
     table_ = Table(title="PRD section 9: success metrics, measured", show_lines=True)
     for column, width in (("Metric", 28), ("Target", 20), ("Measured", 60), ("Status", 14)):
@@ -413,6 +440,13 @@ def render(console: Console, data: Data, rows: list[Row]) -> None:
     for row in rows:
         table_.add_row(row.metric, row.target, row.measured, Text(row.status, style=_STYLE[row.status]))
     console.print(table_)
+    if extra:
+        beyond = Table(title="Beyond the PRD: our own derived metrics (measured and gated like the rows above)", show_lines=True)
+        for column, width in (("Metric", 28), ("Target", 20), ("Measured", 60), ("Status", 14)):
+            beyond.add_column(column, width=width, overflow="fold")
+        for row in extra:
+            beyond.add_row(row.metric, row.target, row.measured, Text(row.status, style=_STYLE[row.status]))
+        console.print(beyond)
     console.print(Text("Runs: " + "; ".join(sorted(setups)) if setups else "No run folder was read.", style="dim"))
     stats = kind_stats(data)
     if stats:
@@ -424,8 +458,9 @@ def render(console: Console, data: Data, rows: list[Row]) -> None:
                           f"{item['queries_mean']:.1f}", f"{item['mb_billed_mean']:.1f}")
         console.print(kinds)
     render_judge(console, judge_summaries(data))
-    unmet = [row.metric for row in rows if row.status == NOT_MET]
-    console.print(Text(f"{len(unmet)} row(s) not met" + (": " + "; ".join(unmet) if unmet else "") + f". {sum(1 for r in rows if r.status == NOT_MEASURED)} not measured.", style="bold red" if unmet else "bold green"))
+    every = [*rows, *(extra or [])]
+    unmet = [row.metric for row in every if row.status == NOT_MET]
+    console.print(Text(f"{len(unmet)} row(s) not met" + (": " + "; ".join(unmet) if unmet else "") + f". {sum(1 for r in every if r.status == NOT_MEASURED)} not measured.", style="bold red" if unmet else "bold green"))
 
 
 def render_judge(console: Console, judged: list[dict[str, Any]]) -> None:
@@ -469,10 +504,12 @@ def main(
     except ConfigError as exc:
         console.print(Text(f"{exc.message} {exc.fix or ''}".strip(), style="bold red"))
         raise typer.Exit(2) from None
-    render(console, data, rows)
+    extra = extra_rows(data, counts)
+    render(console, data, rows, extra)
     if json_out is not None:
-        json_out.write_text(json.dumps({"rows": [vars(row) for row in rows], "per_kind": kind_stats(data), "judge": judge_summaries(data)}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    raise typer.Exit(1 if any(row.status == NOT_MET for row in rows) else 0)
+        payload = {"rows": [vars(row) for row in rows], "beyond_prd": [vars(row) for row in extra], "per_kind": kind_stats(data), "judge": judge_summaries(data)}
+        json_out.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    raise typer.Exit(1 if any(row.status == NOT_MET for row in [*rows, *extra]) else 0)
 
 
 if __name__ == "__main__":

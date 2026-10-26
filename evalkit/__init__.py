@@ -24,8 +24,9 @@ no dependency on any one project's code, models, or metrics. The pieces:
 * ``report`` -- writes a run to JSON/CSV artifacts.
 * ``testing`` -- scripted judge doubles for hermetic tests.
 
-In this project it is test tooling only: nothing under ``src/`` imports it and it imports nothing from ``src/``
-(``tests/test_evalkit.py`` checks both). The project's own metrics and adapters live in ``eval/`` (plan 09).
+In this project nothing under ``src/`` imports it except ``src/evaluation/`` (the chat's ``/eval`` command, which scores real turns with the same
+rubrics), and it imports nothing from ``src/`` (``tests/test_evalkit.py`` checks both). The project's own metrics and adapters live in ``eval/``
+(plan 09).
 """
 
 from __future__ import annotations

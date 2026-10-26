@@ -46,7 +46,9 @@ Where used: every decision heading, every NFR row, and any item that is missing 
 | Result Guard | Code that masks PII and small groups before the model sees rows |
 | Saved Reports | The library of reports that users save. Users may delete their own. |
 | SQL Guard | Code that checks and rewrites each SQL query before it runs |
+| State drift | The saved state of a conversation changes in a way the design does not allow: a field left over from an earlier turn, or a changed user or scope |
 | Trace | A record of every step in one turn, with a short trace ID |
+| Trajectory | The path one turn takes through the graph: which steps ran, in which order, and what each handed to the next |
 | Trio | One example: question, then SQL query, then analyst report |
 
 The step table in section 2 explains each pipeline step. The copied diagram keeps its own short forms, such as BQ and OTel.
@@ -177,7 +179,7 @@ flowchart TD
 - **Why:** Cost and speed are predictable. We can test each step alone. Checkpoints make the confirmation pause survive a restart.
 - **Rejected:** Google ADK (less control of state and loops); a hand-written loop; CrewAI or AutoGen (not predictable, many tokens).
 - **Revisit if:** we move to Vertex AI Agent Engine, or the team has no LangGraph skill.
-- **Source:** (Phase1 3.1). The author's experience level is still a placeholder (see Q8).
+- **Source:** (Phase1 3.1). The author's experience level was a placeholder (see Q8). Note (2026-10-25): the author answered "experienced"; the statement is in [technical-explanation.md](technical-explanation.md) section 2.
 ### 3.2 AI model choice and routing [PROPOSED]
 - **Choice:** Use Gemini models by step (table below). Fallback: primary, sibling model, Vertex AI Gemini, degraded mode.
 - **Why:** Cheap models do simple, high-volume steps. Pro runs only after Flash fails.
@@ -288,6 +290,8 @@ flowchart TD
 - **Rejected:** Grading SQL by string match; self-grading.
 - **Revisit if:** the judge disagrees with human labels.
 - **Data lives in:** `eval/datasets/` (golden test set of 100-200 cases, attack tests, about 50 human labels).
+- **Path and memory checks (impl, 2026-10-25):** The free code checks also read how a turn ran, not only what it said. *Sequence and handoff accuracy:* the steps ran in an order the design allows, each guard ran before what it guards, the route follows what the Input Guard decided, the loops stay inside their limits, the plan that ran is the plan that was made, and the set a user confirmed is the set they were shown. *State drift and memory consistency:* after each turn the saved state belongs to that turn, the user and the scope never change, and the history, the last answer and the shown customer labels change only as designed, also after a restart. They run on every turn of every suite, and scripted multi-turn cases (`trajectories.yaml`) add the paths and memories a case expects.
+- **How they are scored (impl):** The design is a table written by hand, and a test fails when the compiled graph and the table differ. The rules of the code are hard gates: one violation fails the run. What a case expects of a path or a memory depends on how the model classified and answered, so a live run shows it as a finding and an offline run, with a scripted model, requires it. Whether a path was *sensible*, as opposed to allowed, is left to the advisory judge (its `tool_use_quality` rubric reads each turn's path); that judge is not calibrated against human labels (design-only).
 - **Source:** (Phase1 3.10, README-evaluation). Tools: evalkit and Promptfoo. User tests: 5-8 executives.
 ### 3.14 Extensibility (tool registry) [PROPOSED]
 - **Choice:** Each tool has a manifest: schema, risk class, roles, timeout, cost, and whether it can repeat or undo.
@@ -405,6 +409,17 @@ flowchart TD
 - Working prototype and public GitHub repository: missing. Only `bq_client.py` exists.
 - CLI and "runs on another machine": missing. The design names Typer and Rich for the CLI.
 - Framework choice plus experience statement: partial. The experience level is a placeholder.
+
+**Note (2026-10-25, plan 11).** The five lines above describe the state when this record was written (2026-10-22). Today:
+
+| Deliverable | State now |
+|---|---|
+| D1 Architecture diagram | [architecture.md](architecture.md): Mermaid diagrams (production design, request path, the graph as built), the delete-or-save shortcut, a service table, the corrections list. |
+| D2 Technical explanation | [technical-explanation.md](technical-explanation.md): items 2.1, 2.2, 2.3 and 2.5. |
+| D3 Setup and example run | The [README](../README.md): three ways to run it, and a real example run (local model and generated sample data). |
+| D4 Prototype and CLI | Built and tested offline (plans 01 to 10). Run on real BigQuery with the local model on 2026-10-24 and 25 (the live schema and brand checks pass, and the full evaluation ran: see technical-explanation.md section 1). Not yet run on Gemini. The plans' "Still to do" sections were written before those runs and are not updated. |
+| D5 Public repository | The repository is public on GitHub. The documents of plan 11 are pushed only after the owner approves. |
+| D6 Framework choice and experience | Written in section 2 of the technical explanation. The experience statement ("experienced") is the author's answer of 2026-10-25 (Q8). |
 ### 7.3 Agent capabilities and dataset
 - Customer behaviour (top customers, total spend): covered, with a fake ID per session.
 - Product performance and comparison: covered by the Planner.
@@ -414,7 +429,7 @@ flowchart TD
 - Report with action items: covered by the Composer.
 ### 7.4 Beyond or against the brief
 - Beyond: evalkit, Promptfoo, background workers, Model Armor, idempotency keys, failed-job queues.
-- Against: the main diagram is not Mermaid.
+- Against: the main diagram is not Mermaid. (Note, 2026-10-25: [architecture.md](architecture.md) draws it in Mermaid.)
 - Possibly beyond: the Golden Ingest Job and the policy store. The client says another team owns ingestion (see Q39, Q40).
 ## 8. Prototype vs production
 | Production | Prototype stand-in |
@@ -430,7 +445,7 @@ flowchart TD
 | Cloud Tasks background workers | Synchronous, with progress shown |
 | Idempotency keys, failed-job queues | Unique `idempotency_key` column and one pytest. Failed-job queues are design-only. |
 | Bounded replan | Off by default (`max_replans` = 0) |
-| Eval pipeline | Pytest for guards, PII scanner, confirmation flow; about 15 golden cases; `--chaos` runs |
+| Eval pipeline | Pytest for guards, PII scanner, confirmation flow; about 15 golden cases; `--chaos` runs; trajectory cases for the path and the memory (impl) |
 | Charts, email, web search | Design-only. The tool registry interface is real. |
 ## 9. Sanity check
 ### 9.1 Risks the documents already list
@@ -481,7 +496,7 @@ This section is our own opinion, not a fact from the sources.
 | Q5 | **Data:** Saved Reports: fields, storage, soft or hard delete, undo time, legal hold? | Owner, conversation ID, text. Soft delete, 30-day undo. | OpsFleet client | P0 |
 | Q6 | **Definitions:** What do churn, underspending, "last month", currency and time zone mean? | Churn 90 days, calendar month, USD, UTC | OpsFleet client | P0 |
 | Q7 | **Diagram:** Do we add the Input Guard to Tool Router shortcut? | Yes | Us | P0 |
-| Q8 | **Framework:** Is LangGraph fine? What is the author's experience level? | LangGraph, honest statement from the author | Us | P0 |
+| Q8 | **Framework:** Is LangGraph fine? What is the author's experience level? | Answer: LangGraph; the author's level is "experienced" (author, 2026-10-25). See technical-explanation.md section 2. | Us | Answered |
 | Q9 | **Golden Bucket:** Does it exist? What format? Do we fake it and search it in the prototype? | Answer: it does not exist. We define the format and seed a small set. Search is optional. | OpsFleet client | Answered |
 | Q10 | **Models:** Which Gemini models? Is Pro in the routing table? | Flash only, Pro escalation off, Pro for the judge | OpsFleet client | P0 |
 | Q11 | **PII:** Which columns are PII? Which does the SQL Guard block, and which does the Result Guard mask? | Block direct identifiers. Others only in groups of 10 or more. | OpsFleet client | P0 |

@@ -5,6 +5,7 @@
 | `datasets/golden_cases.yaml` | a conversation with the reference SQL that says what the right figures are | `run_golden` |
 | `datasets/attacks.yaml` | an attempt to get personal data, another brand's data or an unconfirmed delete | `run_attacks` |
 | `datasets/chaos_scenarios.yaml` | a run of turns under injected faults | `run_chaos` |
+| `datasets/trajectories.yaml` | a scripted conversation that expects a path through the graph and a state the memory keeps | `run_trajectory` |
 
 A problem in a file is returned, not raised, so one bad entry does not hide the others (same rule as `scenarios/`). The reference SQL is written in
 GoogleSQL with the four tables by their bare names and may use the macros of `src/scenarios/truth.py` (`{brands}`, `{latest_date}`,
@@ -17,15 +18,16 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from eval.trajectory import is_token
 from src.errors import ConfigError
 from src.scenarios.schema import Outcome
 from src.yaml_utils import parse_yaml, read_text, validation_message
 
 DATASETS = Path(__file__).resolve().parent / "datasets"
-GOLDEN_FILE, ATTACKS_FILE, CHAOS_FILE = "golden_cases.yaml", "attacks.yaml", "chaos_scenarios.yaml"
+GOLDEN_FILE, ATTACKS_FILE, CHAOS_FILE, TRAJECTORY_FILE = "golden_cases.yaml", "attacks.yaml", "chaos_scenarios.yaml", "trajectories.yaml"
 
 ID = r"^[a-z0-9][a-z0-9-]{1,60}$"
-TurnKind = Literal["simple", "why", "report"]
+TurnKind = Literal["simple", "why", "report", "tool"]  # "tool": a save, list, delete or undo, which has no SQL (the metrics row says so)
 # What the answer must carry, by name. The code writes the first two around every answer (the envelope); the others are what a case says it must show.
 MustState = Literal["how_i_read", "scope_line", "action_items", "small_group_notice", "row_cap_note", "no_data", "data_ends"]
 Forbid = Literal["pii", "other_brands"]
@@ -126,6 +128,90 @@ class GoldenCase(_Model):
                     turn[name] = data.pop(name)
             data["turns"] = [turn]
         return data
+
+
+# trajectories ------------------------------------------------------------------------------------------------------------------------
+
+class PathExpect(_Model):
+    """The path one turn takes, read from the spans of its trace (`eval/trajectory.py`). `through`: these spans in this order, with others allowed between
+    them. `never`: none of these. A name is a graph node (`planner`), a span (`bq.query`, `guard.output`, `tool.saved_reports.delete`) or a model call as
+    `llm.<step>` (`llm.sql_write`); a name no trace can hold is refused when the file loads, so a typo cannot pass by never matching."""
+
+    through: list[str] = []
+    never: list[str] = []
+
+    @field_validator("through", "never")
+    @classmethod
+    def _names_a_span(cls, names: list[str]) -> list[str]:
+        unknown = [name for name in names if not is_token(name)]
+        if unknown:
+            raise ValueError(f"not a span a trace can hold: {', '.join(unknown)}")
+        return names
+
+
+class MemoryExpect(_Model):
+    """What this turn must show about the conversation's memory. Turn numbers start at 1 and point at an earlier turn.
+
+    - `standalone_has`: the question as the Input Guard rewrote it (the state's `standalone_question`) holds all of these texts.
+    - `standalone_has_any`: and at least one of these.
+    - `recalls`: this answer states every key figure that turn N's answer stated (turn N needs `compare`).
+    - `same_labels_as`: this answer names exactly the `Customer #NNNNN` labels turn N's did.
+    - `saved_title_of`: the report this turn saved has the title of turn N's answer, so "save that" saved what was shown.
+    """
+
+    standalone_has: list[str] = []
+    standalone_has_any: list[str] = []
+    recalls: int | None = Field(None, ge=1)
+    same_labels_as: int | None = Field(None, ge=1)
+    saved_title_of: int | None = Field(None, ge=1)
+
+
+# Fields of a golden turn that score the WORDING of an answer. A trajectory case judges the path and the memory, so it takes none of them: a field that is
+# accepted and never looked at would let a case believe it checks something.
+_WORDING_FIELDS = ("must_state", "says", "says_any", "not_says", "hidden", "forbid", "exclude_figures_of")
+
+
+class TrajectoryTurn(GoldenTurn):
+    """A golden turn, narrowed: `outcome`, `turn_kind`, `saved_reports`, `max_queries` and `budget` work as in a golden case; `reference_sql` with `compare` gives
+    the figures a later turn recalls (they are not scored here, as they are in `golden_cases.yaml`)."""
+
+    path: PathExpect | None = None
+    memory: MemoryExpect | None = None
+
+    @model_validator(mode="after")
+    def _no_wording_checks(self) -> "TrajectoryTurn":
+        given = [name for name in _WORDING_FIELDS if getattr(self, name)]
+        if given:
+            raise ValueError(f"{', '.join(given)}: a trajectory case does not score wording; put it in a golden case")
+        return self
+
+
+class TrajectoryCase(GoldenCase):
+    """A scripted conversation for the path and the memory. `restart_after`: the turns (1-based) after which the app is closed and started again on the same
+    conversation, so what carries over has to come back from the checkpoint on disk."""
+
+    turns: list[TrajectoryTurn] = Field(min_length=1)
+    restart_after: list[int] = []
+
+    @model_validator(mode="after")
+    def _points_at_turns_that_exist(self) -> "TrajectoryCase":
+        count = len(self.turns)
+        for number in self.restart_after:
+            if not 1 <= number < count:
+                raise ValueError(f"restart_after {number}: the app can only be started again between two of the {count} turn(s)")
+        for number, turn in enumerate(self.turns, 1):
+            memory = turn.memory
+            for field_name in ("recalls", "same_labels_as", "saved_title_of"):
+                target = getattr(memory, field_name, None) if memory else None
+                if target is None:
+                    continue
+                if not 1 <= target < number:
+                    raise ValueError(f"turn {number}: {field_name} {target} must be an earlier turn")
+                if field_name == "recalls" and self.turns[target - 1].compare is None:
+                    raise ValueError(f"turn {number}: recalls turn {target}, which has no `compare` to give the figures")
+            if memory and memory.saved_title_of is not None and turn.saved_reports is None:
+                raise ValueError(f"turn {number}: saved_title_of needs `saved_reports`, so the turn is known to save")
+        return self
 
 
 # attacks -----------------------------------------------------------------------------------------------------------------------------
@@ -273,6 +359,10 @@ def load_attacks(path: Path | None = None) -> list[Attack]:
 
 def load_chaos(path: Path | None = None) -> list[ChaosScenario]:
     return _items(_load(path or DATASETS / CHAOS_FILE, ChaosScenario, "chaos scenarios file"))
+
+
+def load_trajectories(path: Path | None = None) -> list[TrajectoryCase]:
+    return _items(_load(path or DATASETS / TRAJECTORY_FILE, TrajectoryCase, "trajectory cases file"))
 
 
 def select(items: list[Any], ids: list[str]) -> list[Any]:

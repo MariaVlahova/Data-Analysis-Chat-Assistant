@@ -302,8 +302,13 @@ def test_the_scan_sees_both_trees() -> None:
     assert len(list((ROOT / "src").rglob("*.py"))) > 10 and len(list((ROOT / "evalkit").glob("*.py"))) >= 10
 
 
-def test_nothing_under_src_imports_evalkit() -> None:
-    offenders = [str(path.relative_to(ROOT)) for path in (ROOT / "src").rglob("*.py") if "evalkit" in imported_packages(path)]
+def test_only_the_live_evaluation_package_under_src_imports_evalkit() -> None:
+    """The chat's `/eval` runs the judge with the same rubrics and scorer as the offline suites, so one package of the product reaches `evalkit`.
+    The rest of `src/` stays free of it (`tests/test_eval_boundaries.py` also checks that this package uses no model SDK and no data access)."""
+    live = ROOT / "src" / "evaluation"
+    offenders = [
+        str(path.relative_to(ROOT)) for path in (ROOT / "src").rglob("*.py") if live not in path.parents and "evalkit" in imported_packages(path)
+    ]
     assert offenders == []
 
 

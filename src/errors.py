@@ -38,6 +38,7 @@ class ErrorKind(str, Enum):
     LLM_BLOCKED = "LLM_BLOCKED"
     CIRCUIT_OPEN = "CIRCUIT_OPEN"
     BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
+    DAILY_BUDGET_USED = "DAILY_BUDGET_USED"
     TURN_TIMEOUT = "TURN_TIMEOUT"
     NUMERIC_UNGROUNDED = "NUMERIC_UNGROUNDED"
     STALE_CONFIRMATION = "STALE_CONFIRMATION"
@@ -53,7 +54,7 @@ class _Spec(NamedTuple):
 
 
 # A refusal is not a failure: shown in a "not possible" panel and counted as `refused` in the metrics (F7, F32).
-REFUSAL_KINDS = frozenset({ErrorKind.OUT_OF_SCOPE, ErrorKind.GUARD_VIOLATION, ErrorKind.INPUT_REJECTED})
+REFUSAL_KINDS = frozenset({ErrorKind.OUT_OF_SCOPE, ErrorKind.GUARD_VIOLATION, ErrorKind.INPUT_REJECTED, ErrorKind.DAILY_BUDGET_USED})
 
 # Where a node falls back to what code can do instead of failing the turn.
 LLM_FAILURE_KINDS = frozenset({
@@ -88,6 +89,7 @@ _SPECS: dict[ErrorKind, _Spec] = {
     ErrorKind.LLM_BLOCKED: _Spec("The language model declined to process that request. Please rephrase it."),
     ErrorKind.CIRCUIT_OPEN: _Spec("The language model service is paused after repeated failures. Please try again in a minute."),
     ErrorKind.BUDGET_EXHAUSTED: _Spec(f"I reached the limit of work I can do for one question, so I stopped. {_NARROW}"),
+    ErrorKind.DAILY_BUDGET_USED: _Spec("Today's usage budget for your account is used up, so I did not run this question. It starts again at midnight UTC. Type /budget to see the use."),
     ErrorKind.TURN_TIMEOUT: _Spec(f"That took longer than the time limit, so I stopped. {_NARROW}"),
     ErrorKind.NUMERIC_UNGROUNDED: _Spec("I removed a number from my answer because I could not check it against the data."),
     ErrorKind.STALE_CONFIRMATION: _Spec("What I found changed after I showed you the preview, so nothing was changed. Here is the new preview."),

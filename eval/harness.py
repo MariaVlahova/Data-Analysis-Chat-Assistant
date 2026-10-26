@@ -19,7 +19,7 @@ from typing import Callable, Sequence
 
 import pandas as pd
 
-from eval.datasets import Attack, ChaosScenario, GoldenCase, GoldenTurn
+from eval.datasets import Attack, ChaosScenario, GoldenCase, GoldenTurn, TrajectoryCase
 from src.access.users import UserContext, load_users
 from src.config import Settings
 from src.data_access.safe_runner import SafeQueryRunner
@@ -57,9 +57,9 @@ class TurnReference:
 class Sample:
     """One conversation, played and ready to be judged."""
 
-    kind: str  # golden | attack | chaos
+    kind: str  # golden | attack | chaos | trajectory
     id: str
-    spec: GoldenCase | Attack | ChaosScenario
+    spec: GoldenCase | Attack | ChaosScenario  # a TrajectoryCase is a GoldenCase
     user: UserContext
     lines: list[str]
     played: Played | None = None  # None when the chat did not start (`error` says why)
@@ -68,6 +68,7 @@ class Sample:
     seconds: float = 0.0
     error: str = ""
     crashed: bool = False  # the error is a crash, not the chat refusing to start (an unknown user, a startup check)
+    report_titles: list[str | None] = field(default_factory=list)  # trajectory only: the title of the newest saved report after each turn that asks (None: not read)
     _invariants: dict[int, dict[str, Check]] = field(default_factory=dict, repr=False)
 
     @property
@@ -140,6 +141,24 @@ class Harness:
             sample.references = [self.reference(turn, sample.user) for turn in case.turns]
         return sample
 
+    def play_trajectory(self, case: TrajectoryCase, *, before_turn: BeforeTurn | None = None) -> Sample:
+        """A golden case's way of playing, plus the app started again where the case says, and the title of the newest saved report after the turns that ask."""
+        sample = self._sample("trajectory", case, case.user, [turn.say for turn in case.turns])
+        saved: list[int | None] = []
+        titles: list[str | None] = []
+
+        def after(index: int, ev: TurnEvidence, facts: Facts) -> None:
+            turn = case.turns[index - 1]
+            saved.append(facts.saved_reports() if turn.saved_reports is not None and facts.saved_reports is not None else None)  # type: ignore[misc]
+            asked = turn.memory is not None and turn.memory.saved_title_of is not None and facts.latest_report_title is not None
+            titles.append(facts.latest_report_title() if asked else None)  # type: ignore[misc]
+
+        self._play(sample, case.id, setup=case.setup, before_turn=before_turn, after_turn=after, restart_after=case.restart_after)
+        sample.saved_reports, sample.report_titles = saved, titles
+        if sample.played is not None:
+            sample.references = [self.reference(turn, sample.user) for turn in case.turns]
+        return sample
+
     def play_attack(self, attack: Attack, *, before_turn: BeforeTurn | None = None) -> Sample:
         sample = self._sample("attack", attack, attack.user, attack.lines)
         self._play(sample, attack.id, setup=attack.setup, before_turn=before_turn)
@@ -173,7 +192,7 @@ class Harness:
 
     def _play(
         self, sample: Sample, name: str, *, setup: Sequence[str] = (), chaos: ChaosSpec | None = None, chaos_engine: Chaos | None = None,
-        before_turn: BeforeTurn | None = None, after_turn: Callable[[int, TurnEvidence, Facts], None] | None = None,
+        before_turn: BeforeTurn | None = None, after_turn: Callable[[int, TurnEvidence, Facts], None] | None = None, restart_after: Sequence[int] = (),
     ) -> None:
         if sample.error:
             return
@@ -190,6 +209,7 @@ class Harness:
         try:
             sample.played = self._runner.play(
                 name, sample.user.user_id, sample.lines, setup=setup, chaos=chaos, chaos_engine=chaos_engine, before_turn=before_turn, after_turn=after,
+                restart_after=restart_after,
             )
             sample.error = sample.played.error  # a hook failed part-way: the turns before it are kept and judged, and the invariant of no crash fails
         except ConfigError as exc:  # the chat would not have started: the sample is a failure to report, and the others still run

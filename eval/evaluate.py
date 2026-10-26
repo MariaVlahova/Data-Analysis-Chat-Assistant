@@ -30,9 +30,9 @@ from evalkit.report import write_csv, write_results, write_summary
 from evalkit.runner import EvaluationReport, EvaluationRunner
 from evalkit.schema import Layer, SampleResult, Verdict
 from evalkit.session import EvalEvent, EvalSession
+from src.evaluation.evidence import NODE_SPANS, WITHHELD, turn_evidence  # noqa: F401 - they moved to src/evaluation; the chat's /eval builds evidence the same way
 from src.scenarios import checks as C
 
-WITHHELD = "[withheld: personal data was found in this turn]"
 # Metrics that are findings to read and not gates, for a run with a real model: a model that never writes the bad SQL has nothing for the code to refuse.
 ADVISORY_LIVE = frozenset({"attack_refused"})
 
@@ -49,6 +49,9 @@ class CaseVerdict:
     advisory: dict[str, str] = field(default_factory=dict)  # failed advisory metrics: shown, never counted
     undecided: list[str] = field(default_factory=list)  # metrics that were N/A for this case
     score: float = 0.0  # the share of the decided metrics that passed
+    llm_calls: int = 0  # model calls the app made for this case, retries and fallbacks included (the metrics rows of its turns)
+    tokens_in: int = 0
+    tokens_out: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return dict(vars(self))
@@ -71,6 +74,14 @@ class Evaluation:
     @property
     def passed_cases(self) -> int:
         return sum(1 for verdict in self.verdicts if verdict.passed)
+
+    @property
+    def usage(self) -> dict[str, int]:
+        """What the app spent on the model in this run: calls and tokens, summed over the cases (the judge's own use is reported by `run_judge`)."""
+        return {
+            "llm_calls": sum(verdict.llm_calls for verdict in self.verdicts), "tokens_in": sum(verdict.tokens_in for verdict in self.verdicts),
+            "tokens_out": sum(verdict.tokens_out for verdict in self.verdicts),
+        }
 
     @property
     def hard_gates_ok(self) -> bool:
@@ -110,16 +121,12 @@ def session_for(sample: Sample) -> EvalSession:
         leaked = leaked_files or sample.invariants(index)["I1"].status == C.FAIL
         last = WITHHELD if leaked else ev.text
         events.append(EvalEvent(type="user", author=sample.user.user_id, content=ev.say))
-        events.append(EvalEvent(type="model", author="agent", content=last))
+        # the tokens of the turn as the gateway counted them, so the report's `tokens_app` is provider-reported and not an estimate from the text
+        usage = {"input_tokens": int(ev.row.get("tokens_in") or 0), "output_tokens": int(ev.row.get("tokens_out") or 0)}
+        events.append(EvalEvent(type="model", author="agent", content=last, usage=usage if any(usage.values()) else {}))
     return EvalSession(
         session_id=sample.id, pipeline=sample.kind, user_id=sample.user.user_id, events=events, state={"final_answer": last},
     )
-
-
-NODE_SPANS = (
-    "input_guard", "context_assembly", "planner", "sql_loop", "evidence_check", "composer", "tool_router", "prepare_action", "hitl_gate", "execute_action",
-    "compose_failure",
-)
 
 
 def evidence_of(sample: Sample) -> dict[str, Any]:
@@ -137,23 +144,11 @@ def evidence_of(sample: Sample) -> dict[str, Any]:
         leaked = leaked_files or sample.invariants(index)["I1"].status == C.FAIL
         spec = case.turns[index] if case is not None and index < len(case.turns) else None
         ref = sample.references[index] if index < len(sample.references) else None
-        queries = [] if leaked else [
-            {"sql": str(attrs.get("sql", "")), "rows": attrs.get("rows"), "status": span.get("status")}
-            for span in ev.spans if span.get("name") == "bq.query" for attrs in [span.get("attrs") or {}]
-        ]
-        confirmations = [
-            {"event": item["name"].split(".", 1)[1], "level": (item.get("attrs") or {}).get("level"), "count": (item.get("attrs") or {}).get("count")}
-            for span in ev.spans for item in span.get("events") or [] if str(item.get("name", "")).startswith("hitl.")
-        ]
-        turns.append({
-            "say": ev.say, "outcome": ev.outcome, "turn_kind": ev.row.get("turn_kind"), "withheld": leaked, "text": WITHHELD if leaked else ev.text,
-            "seconds": round(ev.seconds, 1), "path": [name for name in dict.fromkeys(str(span.get("name")) for span in ev.spans) if name in NODE_SPANS],
-            "queries": queries, "confirmations": confirmations, "repairs": int(ev.row.get("repairs") or 0), "replans": int(ev.row.get("replans") or 0),
-            "subquestions": int(ev.row.get("subquestions") or 0), "llm_calls": int(ev.row.get("llm_calls") or 0),
-            "reference": {"column": spec.compare.column, "values": ref.values} if spec is not None and spec.compare is not None and ref is not None and ref.values else None,
-            # what the entry promised, so a rubric that did not fire is "not exercised" and not "does not apply" (never shown to the judge)
-            "expects": {"figures": bool(spec and spec.compare), "confirmation": bool(spec and "awaiting_confirmation" in spec.outcome)},
-        })
+        reference = {"column": spec.compare.column, "values": ref.values} if spec is not None and spec.compare is not None and ref is not None and ref.values else None
+        turns.append(turn_evidence(
+            say=ev.say, outcome=ev.outcome, text=ev.text, seconds=ev.seconds, spans=ev.spans, row=ev.row, withheld=leaked, reference=reference,
+            expects={"figures": bool(spec and spec.compare), "confirmation": bool(spec and "awaiting_confirmation" in spec.outcome)},
+        ))
     return {
         "id": sample.id, "kind": sample.kind, "title": getattr(sample.spec, "title", sample.id), "user": sample.user.user_id,
         "scope_mode": sample.user.scope_mode, "brands": list(sample.user.brands),
@@ -190,6 +185,8 @@ def verdict_of(sample: Sample, result: SampleResult, advisory: frozenset[str]) -
         id=sample.id, kind=sample.kind, user=sample.user.user_id, passed=not failed and bool(counted), turns=len(sample.evidence), seconds=round(sample.seconds, 1),
         failed=failed, advisory=shown, undecided=sorted(name for name, metric in result.metrics.items() if not metric.decided),
         score=round(sum(1 for metric in counted if metric.verdict is Verdict.PASS) / len(counted), 4) if counted else 0.0,
+        llm_calls=sum(int(ev.row.get("llm_calls") or 0) for ev in sample.evidence), tokens_in=sum(int(ev.row.get("tokens_in") or 0) for ev in sample.evidence),
+        tokens_out=sum(int(ev.row.get("tokens_out") or 0) for ev in sample.evidence),
     )
 
 
@@ -209,7 +206,7 @@ def write_run(evaluation: Evaluation, folder: Path, *, run_id: str, skipped: Seq
     }
     payload = {
         "run_id": run_id, "kind": evaluation.kind, "setup": evaluation.setup, "passed": evaluation.passed_cases, "total": len(evaluation.verdicts),
-        "gate": evaluation.gate, "hard_gates_ok": evaluation.hard_gates_ok, "advisory_metrics": sorted(evaluation.advisory),
+        "usage": evaluation.usage, "gate": evaluation.gate, "hard_gates_ok": evaluation.hard_gates_ok, "advisory_metrics": sorted(evaluation.advisory),
         "baseline": evaluation.comparison.to_dict() if evaluation.comparison else None, "skipped": list(skipped), "unplayed": evaluation.unplayed,
         "cases_hash": B.cases_hash() if evaluation.kind == "golden" else None, "cases": [verdict.to_dict() for verdict in evaluation.verdicts],
     }
@@ -245,15 +242,17 @@ _STYLE = {True: "green", False: "bold red"}
 
 def render(console: Console, evaluation: Evaluation) -> None:
     table = Table(title=f"{evaluation.kind}: {B.setup_key(evaluation.setup)}, model {evaluation.setup['model']}")
-    for column in ("Case", "User", "Result", "Score", "Seconds", "What failed"):
-        table.add_column(column, justify="right" if column in ("Score", "Seconds") else "left")
+    for column in ("Case", "User", "Result", "Score", "Seconds", "Tokens in/out", "What failed"):
+        table.add_column(column, justify="right" if column in ("Score", "Seconds", "Tokens in/out") else "left")
     for verdict in evaluation.verdicts:
         why = "; ".join(f"{name}: {reason}" for name, reason in verdict.failed.items())
         table.add_row(
             verdict.id, verdict.user, Text("PASS" if verdict.passed else "FAIL", style=_STYLE[verdict.passed]), f"{verdict.score:.2f}", f"{verdict.seconds:.0f}",
-            why[:160] + ("..." if len(why) > 160 else ""),
+            f"{verdict.tokens_in:,}/{verdict.tokens_out:,}", why[:160] + ("..." if len(why) > 160 else ""),
         )
     console.print(table)
+    used = evaluation.usage
+    console.print(Text(f"Model use by the app: {used['llm_calls']:,} call(s), {used['tokens_in']:,} tokens in, {used['tokens_out']:,} tokens out.", style="dim"))
     for verdict in evaluation.verdicts:
         for name, reason in verdict.advisory.items():
             console.print(Text(f"{verdict.id}: advisory {name}: {reason}", style="yellow"))

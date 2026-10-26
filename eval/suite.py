@@ -1,6 +1,6 @@
 """Run one suite (golden, attacks or chaos) against the app the configuration describes, score it, write it, and say how it went (plan 09).
 
-Shared by `run_golden.py`, `run_attacks.py` and `run_chaos.py`. The model and the data are those of the config, as for `chat`: `--config config.local.yaml` is the
+Shared by `run_golden.py`, `run_attacks.py`, `run_chaos.py` and `run_trajectory.py`. The model and the data are those of the config, as for `chat`: `--config config.local.yaml` is the
 local model on the sample data. A turn takes minutes with a 30B model on a laptop, so a run is slow and is meant to be started and left.
 
 Exit codes: 0 the run passed, 1 it did not (a failed hard gate; an attack or chaos case that failed; a golden run below its baseline bar), 2 it could not start (a bad
@@ -16,7 +16,7 @@ import typer
 from rich.text import Text
 
 from eval import baseline as B
-from eval.datasets import ChaosScenario, GoldenCase, load_attacks, load_chaos, load_golden, select
+from eval.datasets import ChaosScenario, GoldenCase, load_attacks, load_chaos, load_golden, load_trajectories, select
 from eval.evaluate import ADVISORY_LIVE, evaluate, new_run_id, render, write_run
 from eval.harness import Harness, Sample
 from src.cli.render import Renderer
@@ -27,6 +27,10 @@ from src.scenarios.runner import unmet_requirement
 
 # A live chaos run reports how the outcomes came out and does not gate on them (plan 09): a model's luck with injected faults is not a defect.
 ADVISORY_LIVE_CHAOS = frozenset({"chaos_expectations"})
+# A live trajectory run gates on the rules of the code (the path and the memory checks of every turn) and shows the rest as findings: which path a turn takes depends
+# on how the model classified the question, and whether it saved or recalled depends on what it wrote. Offline, a scripted model is the one that decides, and all of
+# it is required.
+ADVISORY_LIVE_TRAJECTORY = frozenset({"trajectory_path_expected", "memory_expected", "golden_outcome", "golden_effects"})
 LIVE_CHAOS_TURNS = 5  # "5 questions with --chaos mild"
 
 def start(config: Path | None, *, skip_preflight: bool, renderer: Renderer) -> Settings:
@@ -49,7 +53,7 @@ def run_suite(
     say: Callable[[str], None] = lambda text: renderer.console.print(Text(text))  # noqa: E731
     settings = start(config, skip_preflight=skip_preflight, renderer=renderer)
     try:
-        items = {"golden": load_golden, "attack": load_attacks, "chaos": load_chaos}[kind]()
+        items = {"golden": load_golden, "attack": load_attacks, "chaos": load_chaos, "trajectory": load_trajectories}[kind]()
         chosen = select(items, ids)
     except ConfigError as exc:
         renderer.startup_problem(exc.message, exc.fix)
@@ -96,7 +100,7 @@ def run_suite(
         renderer.startup_problem("Nothing was run.", "Every item was skipped for this setup.")
         return 2
 
-    advisory = {"golden": frozenset(), "attack": ADVISORY_LIVE, "chaos": ADVISORY_LIVE_CHAOS}[kind]
+    advisory = {"golden": frozenset(), "attack": ADVISORY_LIVE, "chaos": ADVISORY_LIVE_CHAOS, "trajectory": ADVISORY_LIVE_TRAJECTORY}[kind]
     evaluation = evaluate(kind, samples, setup, run_id=run_id, advisory=advisory, live=True)
     if kind == "golden":
         cases = {verdict.id: verdict.passed for verdict in evaluation.verdicts}
@@ -143,6 +147,8 @@ def baseline_from_run(run_dir: Path, *, baseline_path: Path, tolerance: int) -> 
 def play(harness: Harness, kind: str, item: Any, turns: int | None) -> Sample:
     if kind == "golden":
         return harness.play_golden(item)
+    if kind == "trajectory":
+        return harness.play_trajectory(item)
     if kind == "attack":
         return harness.play_attack(item)
     if turns is not None:

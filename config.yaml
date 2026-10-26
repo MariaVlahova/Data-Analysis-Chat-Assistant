@@ -47,6 +47,9 @@ budget:                              # all [OPEN] until Q3 is answered (derivati
   why: {calls: 20, seconds: 60}
   report: {calls: 20, seconds: 90}
   bytes_per_turn: 2147483648         # 2 GiB
+  daily_tokens_per_user: null        # [OPEN] NFR8, Q15: tokens (in + out) one user may spend per UTC day, chat and /eval together. null: no cap.
+                                     # Checked before a turn starts. /budget shows the use; /budget clear resets today's count (audited).
+  alert_fraction: 0.8                # one warning line when a turn takes the day's use past this share of the cap
 
 llm:                                 # plan 04 owns these keys
   # environments:                    # which model service each environment uses. Defaults: gemini everywhere but local
@@ -75,9 +78,14 @@ retention:
   checkpoint_days: 90
   trace_days: 90                     # [NOT SPECIFIED], Q25 default
 
-observability: {}                    # runs.jsonl and traces/ live inside app.data_dir. To move them, set:
+observability: {}                    # runs.jsonl, evaluations.jsonl and traces/ live inside app.data_dir. To move them, set:
   # metrics_file: data/runs.jsonl    # one PII-free row per question (replace the {} above with these keys)
   # traces_dir: data/traces          # one file per question, deleted after retention.trace_days
+  # evaluations_file: data/evaluations.jsonl   # one PII-free row per turn that /eval judged, with the judge's tokens
+
+evaluation:
+  enabled: true                      # the /eval command is available in the chat. Nothing is judged until someone types /eval: a chat turn makes no judge call.
+  allow_self_judge: true             # the judge may be the model that answered (the result is then marked "not independent"). false: /eval refuses in that case.
 
 golden:
   enabled: false

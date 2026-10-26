@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from eval.datasets import ChaosScenario, GoldenCase, GoldenTurn, ModelScript
+from eval.datasets import ChaosScenario, GoldenCase, GoldenTurn, ModelScript, TrajectoryCase
 from eval.harness import Harness, Sample
 from src.config import Settings, load_settings
 from src.llm.chaos import Chaos
@@ -41,6 +41,21 @@ SPECIAL_TURNS: dict[str, list[tuple[str, dict | None] | None]] = {
     "schema-what-data-bob": [("schema_question", None)],
     "out-of-scope-alice": [("out_of_scope", None)],
     "save-then-delete-alice": [("data_question", None), ("save_report", None), ("delete_reports", {"kind": "last", "text": None}), None],
+}
+
+# What a correct model does on the turns of `eval/datasets/trajectories.yaml` that are not a plain data question (intent, selector, and the question as the Input Guard
+# rewrites it so it needs no history), by case id. `False`: a data question; `None`: a reply to a confirmation, which no model reads. A turn the list does not reach is a
+# data question that stands on its own.
+TRAJECTORY_TURNS: dict[str, list[dict | bool | None]] = {
+    "path-injection-stops-at-the-door": [{"intent": "out_of_scope"}],
+    "path-schema-question-never-queries": [{"intent": "schema_question"}],
+    "path-delete-waits-at-the-gate": [{"intent": "delete_reports", "selector": {"kind": "text_match", "text": "returns"}}, None],
+    "memory-follow-up-keeps-the-period-and-the-metric": [
+        False, {"standalone": "What was my revenue in 2024?"}, {"standalone": "What was my revenue in 2025?"},
+    ],
+    "memory-save-that-saves-what-was-shown": [False, {"intent": "save_report"}],
+    "drift-a-refusal-leaves-the-memory-alone": [False, {"intent": "out_of_scope"}, {"intent": "save_report"}],
+    "drift-memory-survives-a-restart": [False, {"standalone": "What was my revenue in 2024?"}, {"intent": "save_report"}],
 }
 
 
@@ -130,6 +145,36 @@ class Offline:
         if labels:
             parts.append("Customers: " + ", ".join(dict.fromkeys(labels)) + ".")
         return " ".join(parts)
+
+    def trajectory(self, case: TrajectoryCase) -> Callable[[int, str], None]:
+        """`before_turn` for `harness.play_trajectory`: the replies of a model that does what the case expects. A data turn runs the case's reference SQL (the revenue of
+        2025 when it has none), a why turn plans two sub-questions, a recall states the figures of the turn it recalls, and the others are `TRAJECTORY_TURNS`."""
+        user = self.harness.user(case.user)
+        script = TRAJECTORY_TURNS.get(case.id, [])
+
+        def before_turn(index: int, line: str) -> None:
+            turn = case.turns[index - 1]
+            step = script[index - 1] if index - 1 < len(script) else False
+            if step is None:
+                self.scripted.reset_script()
+                return
+            step = step or {}
+            gateway = self.scripted.reset_script()
+            intent = step.get("intent") or INTENT_OF_KIND.get(turn.turn_kind or "simple", "data_question")
+            gateway.always(Step.INPUT_GUARD, guard_reply(intent=intent, standalone=step.get("standalone", line), selector=step.get("selector")))
+            if intent not in DATA_INTENTS:
+                return
+            # A question that repeats an earlier one is answered with the earlier one's query and figures, as a model asked the same thing would.
+            repeated = case.turns[(turn.memory.recalls or turn.memory.same_labels_as) - 1] if turn.memory and (turn.memory.recalls or turn.memory.same_labels_as) else turn
+            values = self.harness.reference(turn, user).values or (self.harness.reference(repeated, user).values if turn.memory and turn.memory.recalls else [])
+            sql = self.harness.macros.expand_sql(turn.reference_sql or repeated.reference_sql or REVENUE_2025, user.brands)
+            for sql_step in SQL_STEPS:
+                gateway.always(sql_step, sql_reply(sql))
+            gateway.always(Step.PLANNER, plan_reply(line, f"{line} (split by brand)") if intent == "why_question" else plan_reply(line))
+            gateway.always(Step.EVIDENCE_CHECK, {"enough": True, "missing": []})
+            gateway.always(Step.COMPOSER, lambda call: composer_reply(self.oracle_body(turn, values, str(call.contents), user.brands), "Answer"))
+
+        return before_turn
 
     # a model that was talked into it ----------------------------------------------------------------------------
 

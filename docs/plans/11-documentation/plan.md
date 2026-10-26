@@ -1,5 +1,5 @@
 # Plan 11: Documentation and HLD
-Status: not started
+Status: the documents are written and checked (see "As built"): `docs/architecture.md`, `docs/technical-explanation.md`, the full `README.md` with a real example run, and a clean-clone test. Not done: pushing them to GitHub (the owner has not approved; the repository is already public), the owner's own words for the experience statement (it is a short draft from the author's one-word answer "experienced"), and everything that needs a Gemini key.
 Estimate: about 1.5 h (our estimate; draft the diagram and explanation early, finish the example run last) · Depends on: 01 to 09 (10 if built) · Blocks: submission
 
 **Goal:** Write the deliverable documents: the Mermaid architecture diagram (including the Input-Guard-to-Tool-Router delete-or-save shortcut, with each infra/framework/service choice named and explained), the technical explanation of every requirement including the design-only ones (reasoning for each choice, data flow and storage between components, error handling and fallback strategies), the framework choice with an experience statement, the README with setup instructions (including requirements.txt) and an example run, and the public GitHub repository that holds all of it.
@@ -130,14 +130,14 @@ Sections: one-paragraph description; **what is real and what is design-only** (t
 - **Public repository (D5).** Making the repository public and pushing is outward-facing. Confirm with the owner first.
 
 ## Tasks
-- [ ] Draft `docs/architecture.md` from the diagram above. Check it renders. Fill the service table from decision sections 2 and 3.
-- [ ] Draft `docs/technical-explanation.md` sections 1 and 3 to 11, reading `README-evaluation.md` and `Phase1-decisions.md` for R4.2 and R6.
-- [ ] Ask the author for the experience statement. Write section 2.
-- [ ] Reconcile every claim with the built prototype: for each requirement, check that "prototype" really means working and that every stand-in is named.
-- [ ] Finish `README.md`. Capture the **real** example run last.
-- [ ] Update stale statements: decision section 7.2 ("working prototype missing", "CLI missing") and each plan's status line once the work is done. Do not change decision.md's meaning; add a dated note.
-- [ ] Repository hygiene before publishing: confirm `.env`, `venv/`, `data/`, `.deepeval/` and `__pycache__/` are ignored; search the git history and the tree for keys and tokens; keep `LICENSE`; remove stale files.
-- [ ] Clean-machine test: clone to a new folder, new venv, `pip install -r requirements.txt`, `doctor`, one question, `pytest`. Fix the README where it fails.
+- [x] Draft `docs/architecture.md` from the diagram above. Check it renders. Fill the service table from decision sections 2 and 3.
+- [x] Draft `docs/technical-explanation.md` sections 1 and 3 to 11, reading `README-evaluation.md` and `Phase1-decisions.md` for R4.2 and R6.
+- [x] Ask the author for the experience statement. Write section 2. (The author answered "Experienced"; the statement is two sentences built on that.)
+- [x] Reconcile every claim with the built prototype: for each requirement, check that "prototype" really means working and that every stand-in is named.
+- [x] Finish `README.md`. Capture the **real** example run last.
+- [x] Update stale statements: decision section 7.2 ("working prototype missing", "CLI missing") and each plan's status line once the work is done. Do not change decision.md's meaning; add a dated note.
+- [x] Repository hygiene before publishing: confirm `.env`, `venv/`, `data/`, `.deepeval/` and `__pycache__/` are ignored; search the git history and the tree for keys and tokens; keep `LICENSE`; remove stale files.
+- [x] Clean-machine test: clone to a new folder, new venv, `pip install -r requirements.txt`, `doctor`, one question, `pytest`. Fix the README where it fails.
 - [ ] With the owner's approval, publish the repository and check that the Mermaid diagrams render on the hosting page.
 
 ## Tests and acceptance
@@ -147,6 +147,52 @@ Sections: one-paragraph description; **what is real and what is design-only** (t
 - No sentence claims a feature the prototype does not have.
 - The README's setup steps work on a clean machine without help. The example output is copied from a real run.
 - Acceptance: the repository URL opens publicly (after approval) with README, docs, code, and diagrams.
+
+## As built
+What was done, what differs from the text above, and what the work found. (impl)
+
+| Topic | What was done |
+|---|---|
+| Diagrams | Seven Mermaid blocks (four in `architecture.md`, three in `technical-explanation.md`). Each was rendered with mermaid-cli 11 in Chrome: all render. The main diagram colours each box as built, stand-in or design (`classDef`). Rendering on GitHub's own page is not checked, because nothing is pushed. |
+| Third diagram | The plan asked for the production diagram and the request path. We added "the graph as built", drawn from `src/agent/graph.py`, because three paths (refuse, describe schema, compose failure) are not in the source diagram. |
+| Service table | One row per block. Where decision.md names no rejected alternative the cell says "None recorded", and a cell that no source states is marked (impl) or (our proposal). |
+| Section 6 of the architecture | Added "Compute and how the components talk" (a table of protocols and compute). The source design names the services but not the protocols, so those are (our proposal). |
+| Experience statement (Q8) | The author answered "Experienced" to a multiple-choice question. The statement is two sentences and adds no years, projects or production claims. The author should replace it with their own words. |
+| Example run | Captured from a **fresh clone** (new venv, `pip install -r requirements.txt`, `local-data build`, `seed-reports`) on 2026-10-25, with the local model and the sample data. The chat reads a pipe, which does not echo typed lines, so a small driver put each typed line back after its prompt. Trailing spaces were removed. Two places are marked `[trimmed]` and `[banner as above]`. |
+| What the example run found | **One of four answers checked was wrong in a way the code cannot catch** (lower-case `'cancelled'` in the SQL, and the highest month's figure put on the wrong month), and a second answer called the tenth category "the lowest". The README shows this with a check against the data. It also found that the log masker turns a run of digits inside a SQL fingerprint into `[CARD_MASKED]` (harmless over-masking). Neither was fixed: plan 11 writes documents. |
+| Live BigQuery runs found by accident | While checking claims we found `data/bigquery/` (git-ignored): the app had been run on real BigQuery with the local model on 2026-10-24 and 25 (61 turns, the full evaluation: golden 9 of 16, attacks 25 of 25, chaos passed, hard gates held), `doctor` is green on the live schema and brand list, and `golden validate` passes 10 of 12 seeds on BigQuery. Plans 03, 05, 07, 09 and 10 and `CLAUDE.md` say these steps are not done. The documents of this plan state what was run; **the plans' "Still to do" lists are not updated** (the technical explanation, section 9, has the current table). |
+| Tests | 3,519 offline tests passed on the working tree, and again in the clean clone (new venv, `pytest` exit code 0, 3,519 passed). The summary line is not printed because `pytest.ini` sets `-q` and the run added another; the count is the number of dots in the log. |
+| Hygiene | `.env`, `venv/`, `data/`, `.deepeval/` and `__pycache__/` are ignored. The whole git history (all branches) has no API key, private key or token, `.env` was never tracked, and the Google Cloud project ID does not appear in it. No stale file was found. The repository is **already public** (`gh repo view`). |
+| Stale statements | decision.md section 7.2 and 7.4, 3.1 and Q8 got dated notes. `CLAUDE.md` got a Plan 11 paragraph. The README's old banner ("holds the setup section only") is gone. |
+| Review | Two independent agents read the documents against the code and listed discrepancies. Their findings, and what was changed because of them, are in "Review findings" below. |
+
+### Review findings
+Two independent agents read the documents against the code (one for sections 4 to 6 and the architecture, one for sections 7.1 to 7.3, 7.8, 10 and the README). Neither edited a file. They found about 35 discrepancies. All were checked and fixed in the documents; the code was not changed. The ones that mattered:
+
+| Finding | Fix |
+|---|---|
+| The documents said nothing had been sent to Google, but the app had been run on real BigQuery with the local model (found independently by both the author of this plan and a reviewer) | Rewritten in the README (a fourth path, "local model, real BigQuery"), the technical explanation (sections 1, 7, 8, 9) and the architecture |
+| A "show SQL" command was described as working | It does not exist in the prototype. The text now says the design serves it and the prototype does not |
+| `finish` was said to print and write the metrics row | It sets the outcome and the history; the CLI prints and the tracer writes the row |
+| "The persona falls back to the last good copy" | It falls back to no persona |
+| Tests "kill the graph after the effect" | They restart at the gate and replay a committed effect; none kills the graph mid-effect |
+| `hitl.*` and `numeric_check` were listed as spans | They are events. The `sub_question` span was missing |
+| "The final answer is stored in the trace" | It is not. A trace keeps the answer's length only |
+| `users.yaml` was said to hold carol and dave | It holds alice, bob, ceo and nobrands |
+| "No baseline for the BigQuery setup" | `eval/baseline.json` has one (9 of 16, tolerance 1). The owner's confirmation of the tolerance is not recorded |
+| `scenario run` was said to run all 23 scenarios | It runs the 7 smoke scenarios; `--all` runs all 23 |
+| "Starts with a warning" for `config.bigquery.yaml` | The warning goes to the log, not to the screen |
+| The manifest's "input schema is validated" and a "policy entry per tool" | The schema is descriptive and nothing validates it; a policy engine is design |
+| Several smaller texts (SQL Guard step order, R2 and R4, confirmation case rules, audit fields, label widths, exit codes, two troubleshooting messages, the diagram label for the router's direct edge, the status column of the prototype table) | Corrected |
+
+What the reviewers confirmed as right: every number in config.yaml against sections 4 to 6, the graph's nodes and edges, the budgets and retry settings, the retention and the startup purges, the SQL Guard's order and rules, the Result Guard, the delete flow's levels and hash, the audit actions, the Golden Bucket's filters, the metrics row's fields, and the README's commands and flags.
+
+## Still to do (needs the owner or a Gemini key)
+1. **Approve the push.** `git add` the new documents, commit on the `documentation` branch, push, open a pull request. Then open the diagrams on GitHub to check that they render there (the last task above).
+2. **Replace the experience statement** with the author's own words if they want more than "experienced".
+3. **Decide what to do about the example run's wrong answer.** The prototype's weak spot is the SQL writer's literals (`'cancelled'`). One fix to consider: give the SQL writer the real values of `status` in its schema slice. It is a code change, so it belongs to plan 07, not here.
+4. **Update the live-step lists of plans 03, 05, 07, 09 and 10** from what the BigQuery runs showed, and write the BigQuery golden baseline if the owner agrees the tolerance.
+5. Everything on Gemini: the model IDs, a structured call, the rate limits, and the suites.
 
 ## Open items and defaults used
 | Item | Default used | Who answers |
