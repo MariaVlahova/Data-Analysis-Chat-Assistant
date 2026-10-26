@@ -12,7 +12,7 @@ from tests.agent_support import REVENUE_SQL, composer_reply, guard_reply, make_r
 
 ROWS = pd.DataFrame({"brand": ["Brand A"], "revenue": [1234.5]})
 BY_CUSTOMER = "SELECT SUM(oi.sale_price) AS revenue FROM order_items oi WHERE oi.user_id = {number}"
-BY_PRICE = "SELECT SUM(oi.sale_price) AS revenue FROM order_items oi WHERE oi.sale_price < {number}"
+BY_PRICE = "SELECT SUM(oi.sale_price) AS revenue FROM order_items oi WHERE oi.sale_price < {number} AND oi.status NOT IN ('Cancelled', 'Returned')"
 
 
 @pytest.fixture

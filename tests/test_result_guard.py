@@ -533,7 +533,7 @@ def test_a_failure_is_a_block_and_the_trace_holds_counts_never_values(tracer):
     (span,) = [s for s in spans_of(tracer, turn.trace_id) if s["name"] == "guard.result"]
     assert span["attrs"] == {
         "status": "ok", "rows": 1, "columns_masked": 0, "cells_masked": 1, "values_masked": 1, "ids_replaced": 1,
-        "groups_hidden": 0, "rows_cut": 0,
+        "groups_hidden": 0, "rows_cut": 0, "unbranded": 0,
     }
     assert failed.row["guard_blocks"]["result"] == 1 and failed.row["error_kinds"] == ["RESULT_GUARD_FAILED"]
     assert failed.row["outcome"] == "failed"
@@ -669,3 +669,57 @@ def test_when_every_row_seen_is_hidden_the_rows_never_seen_are_still_mentioned()
 def test_with_no_rows_left_out_there_is_no_not_checked_notice():
     assert apply(groups([3, 4]), issue_query(**DEMOGRAPHIC)).notices == ["2 groups with fewer than 10 customers were hidden."]
     assert apply(groups([30, 40]), issue_query(**DEMOGRAPHIC), total=2).notices == []
+
+
+# E: order items with no brand (plan 12, C1, A23) -------------------------------------------------------------------------
+
+def brand_rows(brands):
+    return pd.DataFrame({"brand": brands, "revenue": [100.0 * (i + 1) for i in range(len(brands))]})
+
+
+def test_an_empty_brand_is_labelled_for_the_user_who_sees_every_brand_and_the_answer_says_what_it_is():
+    from src.guards.result_guard import NO_BRAND_LABEL, NOTICE_NO_BRAND
+
+    result = apply(brand_rows([None, "", "   ", "Nike", float("nan")]), issue_query(scope_label=ALL_BRANDS_LABEL))
+    assert [row["brand"] for row in result.rows] == [NO_BRAND_LABEL] * 3 + ["Nike", NO_BRAND_LABEL] and NO_BRAND_LABEL == "(no brand)"
+    assert result.notices.count(NOTICE_NO_BRAND) == 1  # one notice, however many rows
+    assert NOTICE_NO_BRAND == "Some order items have no brand. Brand managers do not see them; they are counted here."
+    assert [row["revenue"] for row in result.rows] == [100.0, 200.0, 300.0, 400.0, 500.0]  # only the empty cells changed
+
+
+def test_a_brand_manager_gets_no_such_label_or_notice():
+    from src.guards.result_guard import NO_BRAND_LABEL, NOTICE_NO_BRAND
+
+    result = apply(brand_rows([None, "Nike"]), issue_query())  # "your brands: Brand A, Brand B": the scope views leave unbranded items out
+    assert [row["brand"] for row in result.rows] == [None, "Nike"] and NOTICE_NO_BRAND not in result.notices
+    assert NO_BRAND_LABEL not in json.dumps(result.rows)
+
+
+def test_a_result_with_every_brand_named_has_no_notice():
+    from src.guards.result_guard import NOTICE_NO_BRAND
+
+    assert NOTICE_NO_BRAND not in apply(brand_rows(["Nike", "Levi's"]), issue_query(scope_label=ALL_BRANDS_LABEL)).notices
+
+
+def test_only_a_column_called_brand_is_labelled():
+    df = pd.DataFrame({"category": [None, "Jeans"], "brand_count": [None, 3], "revenue": [1.0, 2.0]})
+    result = apply(df, issue_query(scope_label=ALL_BRANDS_LABEL))
+    assert [row["category"] for row in result.rows] == [None, "Jeans"] and result.rows[0]["brand_count"] is None
+
+
+def test_a_small_group_that_is_hidden_is_not_counted_as_an_unbranded_item():
+    from src.guards.result_guard import NO_BRAND_LABEL, NOTICE_NO_BRAND
+
+    df = pd.DataFrame({"brand": [None, "Nike"], "revenue": [1.0, 2.0], K: [3, 50]})  # the unbranded group has 3 customers: hidden
+    result = apply(df, issue_query(scope_label=ALL_BRANDS_LABEL, **DEMOGRAPHIC))
+    assert [row["brand"] for row in result.rows] == ["Nike"] and NOTICE_NO_BRAND not in result.notices
+    assert NO_BRAND_LABEL not in json.dumps(result.rows)
+
+
+def test_the_label_is_a_rewrite_in_the_guard_decision_with_a_count_and_no_value(tmp_path):
+    tracer = Tracer(tmp_path / "traces", tmp_path / "runs.jsonl")
+    with tracer.start_turn("hash0001", "conv-1", "t-1") as turn:
+        apply(brand_rows([None, None, "Nike"]), issue_query(scope_label=ALL_BRANDS_LABEL))
+    spans = [json.loads(line) for line in tracer.trace_path(turn.trace_id).read_text(encoding="utf-8").splitlines()]
+    (decision,) = [e for s in spans for e in s["events"] if e["name"] == "guard.decision"]
+    assert decision["attrs"]["outcome"] == "rewrite" and decision["attrs"]["rule"] == "NO_BRAND_LABELLED" and decision["attrs"]["unbranded"] == 2

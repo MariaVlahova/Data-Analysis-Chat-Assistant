@@ -237,6 +237,9 @@ def build_agent(
     # Imported here: the Google SDKs, BigQuery and pandas load only when a chat starts (`trace`, `metrics` and `doctor` stay light).
     from src.access.users import load_users, resolve_salt
     from src.data_access.safe_runner import SafeQueryRunner
+    from src.agent.definition_check import build_definition_check
+    from src.golden.glossary import load_glossary
+    from src.guards.domain_words import build_domain_words
     from src.guards.output_guard import OutputGuard
     from src.guards.pseudonymizer import SessionPseudonymizer
     from src.guards.result_guard import ResultGuard
@@ -269,6 +272,13 @@ def build_agent(
             raise AgentError(ErrorKind.ACCESS_STORE_DOWN, detail="users.yaml is not valid") from None
         return directory.get(user.user_id)  # a user who left the file raises ConfigError: `policy_context` reads that as no access
 
+    # The glossary of the Golden Bucket when it is open, else the file: it is a word list either way (plan 12, A1 and D2).
+    glossary = getattr(golden, "glossary", None) or load_glossary(settings.resolve(settings.golden.glossary_file))[0]  # a bad file: no entries
+    domain_words = None
+    if settings.guards.require_domain_words:
+        domain_words = build_domain_words(allowlist, [word for entry in glossary.entries for word in entry.words()])
+    revenue_words = [word for entry in glossary.entries if entry.term.casefold() == "revenue" for word in entry.words()]  # the term and its aliases
+
     deps = Deps(
         settings=settings,
         gateway=(gateway_wrapper or (lambda inner: inner))(gateway or LLMGateway(settings, chaos=chaos)),
@@ -285,6 +295,8 @@ def build_agent(
         golden=golden.examples if golden is not None else None,
         glossary=golden.definitions if golden is not None else None,
         chaos=chaos,
+        domain_words=domain_words,
+        definition_check=build_definition_check(revenue_words),
         **({"clock": clock} if clock is not None else {}),
         **({"audit": audit} if audit is not None else {}),
     )

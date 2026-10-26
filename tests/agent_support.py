@@ -25,9 +25,10 @@ from src.storage.db import Database, open_connection, utc_now
 from tests.fake_bigquery import FakeClient
 from tests.guard_support import ALICE
 
+# Revenue as the glossary defines it (plan 12, D2 sends back a revenue query that does not leave out cancelled and returned items).
 REVENUE_SQL = (
     "SELECT p.brand, SUM(oi.sale_price) AS revenue FROM order_items oi JOIN products p ON p.id = oi.product_id "
-    "GROUP BY p.brand ORDER BY revenue DESC"
+    "WHERE oi.status NOT IN ('Cancelled', 'Returned') GROUP BY p.brand ORDER BY revenue DESC"
 )
 
 
@@ -136,6 +137,23 @@ def make_rig(project: Path, user: UserContext = ALICE, *, fake_bigquery: FakeCli
     )
     rig.have_conversation(rig.conversation_id)
     return rig
+
+
+def make_real_gateway_rig(project: Path, user: UserContext = ALICE, *, fake_bigquery: FakeClient, debug_prompts: bool = False, **replies: Any):
+    """The same graph with the REAL `LLMGateway` over a fake SDK client that answers by schema (`SchemaClient`), for what only the real gateway does: the exchange
+    file of `--debug-prompts` (plan 12). `replies` replace the client's replies by schema name (`InputGuardOut`, `SqlOut`, `ComposerOut`, `PlanOut`, `EvidenceOut`).
+    Returns the rig and the client."""
+    from src.llm.fake import FakeClock
+    from src.llm.gateway import LLMGateway
+    from tests.eval_support import SchemaClient
+
+    settings = load_settings(project / "config.yaml", load_env_file=False)
+    client = SchemaClient()
+    client.replies.update({"InputGuardOut": guard_reply(standalone="Revenue by brand"), "SqlOut": sql_reply(), **replies})
+    clock = FakeClock()
+    rig = make_rig(project, user, fake_bigquery=fake_bigquery, gateway=LLMGateway(settings, client=client, clock=clock, sleep=clock.sleep))
+    rig.tracer.debug_prompts = debug_prompts
+    return rig, client
 
 
 def echo_turn(session, text, *, trace_id, progress):

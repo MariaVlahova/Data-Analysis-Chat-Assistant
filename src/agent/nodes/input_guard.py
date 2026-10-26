@@ -7,6 +7,10 @@ looks like an injection, what the intent is, how to rewrite it so it needs no hi
 If the call fails or its reply is unusable, the request is blocked (`INPUT_GUARD_FAILED`, Q13 default). It never falls through
 to the next step. If the model is fooled, nothing is lost: the SQL Guard, Result Guard, Output Guard and HITL Gate are code
 and still hold (NFR16). The selector the model produces is checked in code, and the model never sees or writes an ID.
+
+A second check in code follows the classifier (plan 12, A1, R2a): a message it took for a question about the data must hold a word of
+the store's domain in what the user typed (`guards/domain_words.py`), or be a short follow-up to an answered data turn. Without one the
+turn ends with a question that code wrote ("Which data should I look at?"), so an off-topic request that fools the classifier is stopped.
 """
 from __future__ import annotations
 
@@ -18,10 +22,12 @@ from pydantic import BaseModel, create_model
 from src import pii
 from src.agent.boundary import node
 from src.agent.deps import Deps
+from src.agent.nodes.policy import current_user
 from src.agent.prompts.locked_rules import BASE_INTENTS
 from src.agent.prompts.templates import input_guard_prompt
 from src.agent.state import HISTORY_EXCHANGES, TurnState
 from src.errors import AgentError, ErrorKind
+from src.guards.domain_words import is_follow_up
 from src.guards.pseudonymizer import LABEL_IN_TEXT
 from src.llm.routing import Step
 from src.observability import guard_decision, turn_metrics
@@ -57,6 +63,8 @@ OUT_OF_SCOPE_INTENT = "out_of_scope"
 REFUSAL_OUT_OF_SCOPE = "out_of_scope"
 REFUSAL_INJECTION = "injection"
 REFUSAL_SESSION_LABEL = "session_label"
+REFUSAL_NO_DATA_WORDS = "no_data_words"
+DATA_TURN_KINDS = frozenset({"simple", "why", "report"})  # the turn kinds that end in an answer built from query results
 
 
 class SelectorOut(BaseModel):
@@ -94,6 +102,18 @@ def typed_text(text: str) -> str:
 def make_input_guard(deps: Deps):
     schema = make_input_schema(deps.registry.intents())
     limit = deps.settings.guards.max_input_chars
+
+    def lacks_domain_word(state: TurnState, question: str) -> bool:
+        """True when the user's own text holds no word of the store's domain and is no follow-up to an answered data turn (A1)."""
+        words = deps.domain_words
+        if words is None:
+            return False
+        user = current_user(deps, state)
+        # The user's brands (the CEO's: every brand) and the product categories are words too; they depend on who asks and on the data.
+        brands = deps.catalog.brands if user.scope_mode == "all" else user.brands
+        if words.has_domain_word(question, (*brands, *deps.catalog.product_words)):
+            return False
+        return not (state.get("last_answer") and is_follow_up(question))
 
     @node(deps, "input_guard", progress="Understanding your question...")
     def input_guard(state: TurnState) -> dict:
@@ -141,6 +161,11 @@ def make_input_guard(deps: Deps):
             # about one customer by label (or a follow-up the rewrite turned into one) is refused here, not left to the SQL writer.
             guard_decision("input", "block", rule="SESSION_LABEL")
             update["refusal"] = REFUSAL_SESSION_LABEL
+        elif turn_kind in DATA_TURN_KINDS and lacks_domain_word(state, question):
+            # The classifier called this a question about the data, and nothing in what the user typed is about the data: code asks which
+            # data to look at instead of running a query for it (A1). The words checked are the user's own, not the model's rewrite.
+            guard_decision("input", "block", rule="NO_DATA_WORDS")
+            update["refusal"] = REFUSAL_NO_DATA_WORDS
         else:
             guard_decision("input", "pass")
 

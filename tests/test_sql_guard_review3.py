@@ -141,7 +141,7 @@ def test_which_aggregates_reduce_and_which_collect():
 # 3. lineage must not blow up -----------------------------------------------------------------------------------------------------
 
 def chain_of_whole_rows(depth: int) -> str:
-    ctes = ["c0 AS (SELECT 1 AS a, 2 AS b)"]
+    ctes = ["c0 AS (SELECT order_id AS a, num_of_item AS b FROM orders)"]  # a query must read a table (plan 12, A2)
     ctes += [f"c{i} AS (SELECT TO_JSON_STRING(c{i - 1}) AS a, TO_JSON_STRING(c{i - 1}) AS b FROM c{i - 1})" for i in range(1, depth)]
     return "WITH " + ", ".join(ctes) + f" SELECT a FROM c{depth - 1}"
 
@@ -185,7 +185,7 @@ def test_the_function_check_does_not_write_out_a_subtree_per_call(monkeypatch):
     monkeypatch.setattr(sql_guard, "_to_sql", lambda tree: calls.append(type(tree).__name__) or original(tree))
     guard = make_guard()
     shallow = len(calls)
-    accepted(guard, "SELECT " + "ABS(" * 30 + "1" + ")" * 30 + " AS x", ALICE)
+    accepted(guard, "SELECT " + "ABS(" * 30 + "1" + ")" * 30 + " AS x FROM orders", ALICE)
     assert len(calls) - shallow <= 3, calls
 
 
@@ -460,5 +460,5 @@ def test_the_guard_span_is_listed_in_plan_02_where_the_other_plans_look_for_span
     assert "`guard.sql`" in table
     tracer = Tracer(tmp_path / "traces", tmp_path / "runs.jsonl")
     with tracer.start_turn("hash0001", "conv-1", "t-1") as turn:
-        make_guard().check("SELECT 1 AS one", ALICE)
+        make_guard().check("SELECT COUNT(*) AS n FROM orders", ALICE)
     assert '"guard.sql"' in tracer.trace_path(turn.trace_id).read_text(encoding="utf-8")

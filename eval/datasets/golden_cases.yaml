@@ -11,13 +11,18 @@
 #
 # `outcome` lists the outcomes that are right (default: answered or partial). `forbid` lists invariants the turn must have passed, not skipped.
 # Budgets are the configured ones for the kind of turn unless a case says `budget: {calls: N}`.
+# `notes` says why a case was changed after a run. A changed file has another `cases_hash` (eval/baseline.py), so a baseline made before the change says so.
 
 - id: rev-monthly-alice
   title: Monthly revenue of a manager's own brands
   story: US1
+  notes: >
+    2026-10-26 (plan 12, D4). Reworded from "the monthly revenue of my brands", which has two valid readings: one total for each month, or one figure for each
+    brand and month. The real-model run of 2026-10-25 took the second and answered with a range. The reference SQL (one total for each month) did not change. The
+    question was made unambiguous; it was not made to suit a model. Both baselines of eval/baseline.json predate it.
   user: alice
   question: >
-    What was the monthly revenue of my brands in 2025? Count revenue as the sale price of items that were not cancelled or returned.
+    What was the total monthly revenue of my brands together in 2025? Count revenue as the sale price of items that were not cancelled or returned.
   turn_kind: simple
   reference_sql: |
     SELECT FORMAT_DATE('%Y-%m', DATE(oi.created_at)) AS month, SUM(oi.sale_price) AS revenue
@@ -219,9 +224,12 @@
   user: carol
   question: What was my revenue in each month of 2030?
   turn_kind: simple
+  notes: >
+    2026-10-26 (plan 12, D2). The reference SQL now leaves out cancelled and returned items, as the glossary defines revenue and as the definition check requires of
+    every revenue query. It had no status filter; the case still expects no rows, so what it asks of the app did not change.
   reference_sql: |
     SELECT FORMAT_DATE('%Y-%m', DATE(oi.created_at)) AS month, SUM(oi.sale_price) AS revenue
-    FROM order_items oi WHERE EXTRACT(YEAR FROM oi.created_at) = 2030
+    FROM order_items oi WHERE oi.status NOT IN ('Cancelled', 'Returned') AND EXTRACT(YEAR FROM oi.created_at) = 2030
     GROUP BY month
   reference_rows: 0
   must_state: [no_data]

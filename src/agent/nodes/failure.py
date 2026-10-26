@@ -1,7 +1,7 @@
 """`refuse` and `compose_failure` (plan 07, F7, F32, F33, F35, F36): the honest ends of a turn.
 
 `refuse` is not a failure: the Input Guard said the message is out of scope or looks like an injection, and the answer is a
-polite refusal from a template (F7, F17).
+polite refusal from a template (F7, F17). A message with no word of the store's domain gets a question instead (plan 12, A1).
 
 `compose_failure` turns whatever stopped the turn into one friendly message, which the CLI shows with the trace ID. It is
 reached when a node raised (the error boundary), or when no sub-question has anything to show. It chooses the most useful
@@ -12,11 +12,14 @@ from __future__ import annotations
 
 from src.agent.boundary import node
 from src.agent.deps import Deps
-from src.agent.nodes.input_guard import REFUSAL_INJECTION, REFUSAL_SESSION_LABEL
+from src.agent.nodes.input_guard import REFUSAL_INJECTION, REFUSAL_NO_DATA_WORDS, REFUSAL_SESSION_LABEL
 from src.agent.state import BLOCKED, TOO_EXPENSIVE, TOO_SLOW, ErrorRecord, TurnState, with_error
 from src.errors import REFUSAL_KINDS, AgentError, ErrorKind, default_message
 from src.guards.refusals import refusal_text, violation
 
+NO_DATA_WORDS_TEXT = (  # written by code, and phrased as a question: a false refusal costs the user one more message (plan 12, A1)
+    "I can answer questions about your store's orders, products, customers and sales. Which data should I look at?"
+)
 REFUSAL_INJECTION_TEXT = (
     "I can't follow instructions that change how I work or ask me to bypass my checks. "
     "I can answer questions about the store's orders, products, customers and sales."
@@ -30,7 +33,12 @@ def make_refuse(deps: Deps):
         if reason == REFUSAL_SESSION_LABEL:  # a guard violation with a rule of its own, like a refusal of the SQL Guard
             err = violation("SESSION_LABEL", "the message names a customer label")
             return {"errors": with_error(state, err), "answer": err.user_message, "outcome": "refused"}
-        text = REFUSAL_INJECTION_TEXT if reason == REFUSAL_INJECTION else default_message(ErrorKind.OUT_OF_SCOPE)
+        if reason == REFUSAL_INJECTION:
+            text = REFUSAL_INJECTION_TEXT
+        elif reason == REFUSAL_NO_DATA_WORDS:
+            text = NO_DATA_WORDS_TEXT
+        else:
+            text = default_message(ErrorKind.OUT_OF_SCOPE)
         err = AgentError(ErrorKind.OUT_OF_SCOPE, text, detail=f"refused by the Input Guard: {reason}")
         return {"errors": with_error(state, err), "answer": text, "outcome": "refused"}
 

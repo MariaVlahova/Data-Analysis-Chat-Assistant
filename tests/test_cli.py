@@ -112,7 +112,7 @@ def script_one_answer(gateway, body: str, standalone: str = "revenue by brand") 
 
 def test_a_turn_runs_the_agent_and_prints_the_answer_once(config_path, scripted_gateway):
     script_one_answer(scripted_gateway, "Nike sold 1,200 items and Levi's 900.")
-    result = chat(config_path, "alice", "hello there\n/quit\n")
+    result = chat(config_path, "alice", "show me revenue by brand\n/quit\n")
     assert result.exit_code == 0, result.output
     assert result.output.count("Nike sold 1,200 items") == 1
     assert "How I read your question" in result.output and "Scope: your brands: Brand A, Brand B" in result.output
@@ -120,7 +120,7 @@ def test_a_turn_runs_the_agent_and_prints_the_answer_once(config_path, scripted_
 
 def test_text_that_looks_like_markup_cannot_crash_the_screen(config_path, scripted_gateway):
     script_one_answer(scripted_gateway, "You asked about [/oops] [bold]x and Nike sold 1,200 items.", standalone="[/oops] [bold]x")
-    result = chat(config_path, "alice", "[/oops] [bold]x\n/quit\n")
+    result = chat(config_path, "alice", "[/oops] [bold]x revenue\n/quit\n")
     assert result.exit_code == 0
     assert "[/oops]" in result.output and "Something went wrong" not in result.output
 
@@ -283,14 +283,14 @@ def test_a_persona_file_broken_mid_chat_does_not_block_the_turn(persona_project,
     real_run_turn = cli_main.run_turn
 
     def corrupt_then_answer(session, text, *, trace_id, progress):
-        if text == "break":
+        if "break" in text:
             (persona_project / "personas" / "default.yaml").write_text("id: default\nversion: 0\n", encoding="utf-8")
         return real_run_turn(session, text, trace_id=trace_id, progress=progress)
 
     monkeypatch.setattr(cli_main, "run_turn", corrupt_then_answer)
     script_one_answer(scripted_gateway, "Nike sold 1,200 items.")
     script_one_answer(scripted_gateway, "Levi's sold 900 items.")
-    result = chat(persona_project / "config.yaml", "alice", "break\nnext\n/quit\n")
+    result = chat(persona_project / "config.yaml", "alice", "break the revenue\nnext revenue\n/quit\n")
     assert result.exit_code == 0
     assert "Nike sold 1,200 items" in result.output  # the file was broken before this turn ran: carried on without a persona
     assert "Levi's sold 900 items" in result.output

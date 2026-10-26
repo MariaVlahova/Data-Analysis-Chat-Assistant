@@ -77,14 +77,45 @@ def test_first_load_reads_bigquery_and_saves_both_cache_files(settings, cache_di
     assert sorted(json.loads((cache_dir / "brands.json").read_text(encoding="utf-8"))["brands"]) == sorted(FAKE_BRANDS)
 
 
-def test_metadata_calls_scan_nothing_and_the_two_queries_are_small(settings, fake_bigquery):
+def test_metadata_calls_scan_nothing_and_the_three_queries_are_small(settings, fake_bigquery):
     load_catalog(settings, now=NOW)
     assert len(fake_bigquery.table_calls) == 4
     assert [j.sql for j in fake_bigquery.real_jobs] == [
         "SELECT MAX(created_at) AS latest FROM `bigquery-public-data.thelook_ecommerce.order_items`",
         "SELECT DISTINCT brand FROM `bigquery-public-data.thelook_ecommerce.products` WHERE brand IS NOT NULL",
+        "SELECT DISTINCT category, department FROM `bigquery-public-data.thelook_ecommerce.products`",
     ]
     assert all(j.config.labels["user"] == "system" for j in fake_bigquery.real_jobs)
+
+
+# product categories and departments (plan 12, A1) -------------------------------------------------
+
+def test_the_product_categories_and_departments_are_read_and_saved(settings, cache_dir, fake_bigquery):
+    catalog = load_catalog(settings, now=NOW).catalog
+    assert catalog.product_words == frozenset({"Jeans", "Tops & Tees", "Women", "Men"})
+    assert sorted(json.loads((cache_dir / "product_words.json").read_text(encoding="utf-8"))["words"]) == ["Jeans", "Men", "Tops & Tees", "Women"]
+
+
+def test_a_failed_read_of_the_product_words_leaves_them_empty_and_never_stops_the_load(settings, cache_dir, fake_bigquery):
+    fake_bigquery.add("SELECT DISTINCT category", query_errors=[api_exc.BadRequest("bad")] * 5, dry_errors=[api_exc.BadRequest("bad")] * 5)
+    loaded = load_catalog(settings, now=NOW)
+    assert loaded.catalog.product_words == frozenset() and loaded.warnings == ()
+    assert loaded.catalog.brands == frozenset(FAKE_BRANDS)  # the rest of the catalog is whole
+    assert not (cache_dir / "product_words.json").exists()
+
+
+def test_the_saved_product_words_are_the_fallback_when_a_fresh_read_fails(settings, fake_bigquery):
+    load_catalog(settings, now=NOW)
+    fake_bigquery.add("SELECT DISTINCT category", query_errors=[api_exc.BadRequest("bad")] * 5, dry_errors=[api_exc.BadRequest("bad")] * 5)
+    later = NOW + CACHE_MAX_AGE + timedelta(minutes=1)
+    assert load_catalog(settings, now=later).catalog.product_words == frozenset({"Jeans", "Tops & Tees", "Women", "Men"})
+
+
+def test_a_dataset_without_category_and_department_columns_has_no_product_words(settings, fake_bigquery):
+    columns = [(name, typ) for name, typ in FAKE_COLUMNS["products"] if name not in ("category", "department")]
+    fake_bigquery.tables["products"] = make_table("products", columns, FAKE_TABLE_BYTES["products"])
+    assert load_catalog(settings, now=NOW).catalog.product_words == frozenset()
+    assert not [job for job in fake_bigquery.real_jobs if "category" in job.sql]
 
 
 def test_a_copy_under_24_hours_old_is_used_without_calling_bigquery(settings, fake_bigquery):
@@ -117,7 +148,7 @@ def test_only_the_stale_part_is_read_again(settings, cache_dir, fake_bigquery):
     jobs, tables = len(fake_bigquery.real_jobs), len(fake_bigquery.table_calls)
     load_catalog(settings, now=NOW + timedelta(hours=1))
     assert len(fake_bigquery.table_calls) == tables  # the schema copy was fresh
-    assert [j.sql for j in fake_bigquery.real_jobs[jobs:]] == [fake_bigquery.real_jobs[1].sql]  # only the brand query ran
+    assert [j.sql for j in fake_bigquery.real_jobs[jobs:]] == [fake_bigquery.real_jobs[1].sql]  # only the brand query ran (the product words were fresh)
 
 
 def test_a_cache_from_another_dataset_is_ignored(settings, cache_dir, fake_bigquery):

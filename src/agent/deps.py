@@ -19,12 +19,14 @@ from datetime import date, datetime, timezone
 from typing import Any, Callable
 
 from src.access.users import UserContext
+from src.agent.definition_check import DefinitionCheck
 from src.cli.render import ProgressFn
 from src.config import Settings
 from src.data_access.catalog import SchemaCatalog
 from src.data_access.safe_runner import SafeQueryRunner
 from src.errors import AgentError, ErrorKind
 from src.guards.allowlist import Allowlist
+from src.guards.domain_words import DomainWords
 from src.guards.output_guard import OutputGuard
 from src.guards.result_guard import ResultGuard
 from src.guards.sql_guard import SQLGuard
@@ -87,6 +89,11 @@ class Deps:
     glossary: Callable[[str], list[str]] | None = None  # the definitions that the question uses
     golden: Callable[[str, UserContext], list[dict[str, Any]]] | None = None  # similar solved questions that this user may see
     chaos: Chaos | None = None
+    # Plan 12, A1: the words that make a message a question about the store's data. None: the Input Guard checks nothing beyond the classifier
+    # (`guards.require_domain_words: false`, or a `Deps` made by hand).
+    domain_words: DomainWords | None = None
+    # Plan 12, D2: the revenue definition, checked on the model's SQL before it runs. None: not checked (a `Deps` made by hand).
+    definition_check: DefinitionCheck | None = None
     today: Callable[[], date] = lambda: datetime.now(timezone.utc).date()  # UTC (A17); a test sets the date
     clock: Callable[[], float] = time.monotonic  # the turn budget's clock; a test moves it to reach the time limit
     # The key of the hash that binds a confirmation to the exact set of IDs. `build_agent` derives a lasting one from the

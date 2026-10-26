@@ -18,8 +18,9 @@ from rich.tree import Tree
 from src.access.users import UserContext
 from src.config import Settings
 from src.observability import alerts
+from src.observability.exchange import load_exchange
 from src.observability.metrics import MetricsSummary, read_runs, summarize
-from src.observability.tracing import trace_file, valid_trace_id
+from src.observability.tracing import exchange_file, trace_file, valid_trace_id
 
 SUMMARY_ITEMS = 4  # scalar attributes shown on a span line
 SUMMARY_VALUE_CHARS = 60
@@ -222,6 +223,99 @@ def show_trace(
             console.print(Text(json.dumps(span, ensure_ascii=False)), soft_wrap=True)
     else:
         console.print(build_tree(spans))
+    return True
+
+
+# the exchange of a turn and the turns of a conversation (plan 12, B2 and B3, R7c) ---------------------------------
+
+NO_EXCHANGE = (
+    "No message exchange was stored for this turn. The chat keeps it only when it was started with --debug-prompts "
+    "(python -m src.cli.main chat --user NAME --debug-prompts)."
+)
+
+
+def _block(console: Console, label: str, text: Any) -> None:
+    """A labelled block of stored text, indented, as plain text: a stored string like "[/oops]" cannot crash the screen."""
+    console.print(Text(f"    {label}", style="bold dim"))
+    for line in str(text).split("\n"):
+        console.print(Text("      " + line, style="dim"), soft_wrap=True)
+
+
+def show_exchange(
+    console: Console, settings: Settings, trace_id: str | None = None, *, user: UserContext | None = None, default_id: str | None = None,
+) -> bool:
+    """Print what was sent to the model and what came back, attempt by attempt, then the answer the user saw. Returns False when there was
+    nothing to show. The rules of `show_trace` apply: with `user` set, only that user's turns (the CEO sees all), the same message for a turn
+    that is not theirs as for one that does not exist. The contents hold no result row (a line names each result instead), and the
+    Composer's draft is not there: the answer is, if the Output Guard passed it."""
+    wanted = trace_id or default_id or last_trace_id(settings.metrics_path, user.user_hash if user else None)
+    if wanted is None:
+        console.print(Text("No turns recorded yet. Ask a question first, then look at its exchange."))
+        return False
+    spans = load_trace(settings.traces_path, wanted)
+    if spans is None or not _can_view(spans, user):  # the trace carries the owner: without it nothing is shown
+        console.print(Text(
+            f"No trace found for '{_short(wanted, 40)}'. A trace ID has 8 characters and is shown with every error. "
+            f"Traces are kept {settings.retention.trace_days} days."
+        ))
+        return False
+    lines = load_exchange(exchange_file(settings.traces_path, wanted))
+    if lines is None:
+        console.print(Text(NO_EXCHANGE))
+        return False
+    console.print(Text.assemble(("Exchange ", "bold"), (str(wanted), "bold cyan"), f"  {len(lines)} line(s), in the order they happened"))
+    number = 0
+    for line in lines:
+        if line.get("kind") == "answer":
+            console.print(Text("answer  (the text the user saw, after the Output Guard)", style="bold green"))
+            _block(console, "text:", line.get("reply") or "")
+            continue
+        number += 1
+        failed = bool(line.get("error_kind"))
+        head = Text(f"{number}. {line.get('step', '?')}", style="bold red" if failed else "bold")
+        head.append(f"  {line.get('model', '?')}  attempt {line.get('attempt', '?')}  span {line.get('span_id', '?')}", style="magenta")
+        head.append(f"  tokens {line.get('tokens_in', 0)} in, {line.get('tokens_out', 0)} out", style="magenta")
+        if failed:
+            head.append(f"  ERROR {line['error_kind']}", style="bold red")
+        console.print(head)
+        _block(console, "system:", line.get("system") or "")
+        _block(console, "sent:", line.get("contents") or "")
+        _block(console, "reply:", line.get("reply") if line.get("reply") is not None else "(none: the attempt failed before a reply)")
+    return True
+
+
+def show_conversation(
+    console: Console, settings: Settings, conversation_id: str, *, user: UserContext | None = None, default_id: str | None = None,
+) -> bool:
+    """The turns of one conversation, from `runs.jsonl`, with the question of each (masked) from its trace. A reader goes from here to a turn
+    (`trace ID`) and from the turn to its exchange (`trace ID --exchange`). With `user` set, a brand manager sees their own turns only."""
+    wanted = conversation_id or default_id
+    try:
+        rows, _ = read_runs(settings.metrics_path)
+    except OSError as exc:
+        console.print(Text(f"The metrics file could not be read ({type(exc).__name__}). Close any program that has it open."))
+        return False
+    scoped_hash = user.user_hash if user is not None and user.scope_mode != "all" else None
+    mine = [
+        row for row in rows
+        if row.get("conversation_id") == wanted and (scoped_hash is None or row.get("user_hash") == scoped_hash) and valid_trace_id(row.get("trace_id"))
+    ]
+    if not mine:
+        console.print(Text(f"No turns found for conversation '{_short(wanted or '', 40)}'."))
+        return False
+    table = Table(title=Text(f"Conversation {_short(wanted, 40)}: {len(mine)} turn(s)"), show_lines=False)
+    for column in ("turn", "trace ID", "time (UTC)", "intent", "outcome", "question"):
+        table.add_column(column)
+    for row in mine:
+        spans = load_trace(settings.traces_path, row["trace_id"])
+        root = next((span for span in spans if span.get("parent_id") is None), None) if spans else None
+        question = (root.get("attrs") or {}).get("question") if root else None
+        table.add_row(
+            Text(str(row.get("turn_id", "?"))), Text(str(row["trace_id"]), style="cyan"), Text(str(row.get("ts", "?"))[:19].replace("T", " ")),
+            Text(str(row.get("intent") or "-")), Text(str(row.get("outcome") or "?")),
+            Text(_short(question, QUESTION_CHARS) if question else "(trace deleted)", style="dim"),
+        )
+    console.print(table)
     return True
 
 

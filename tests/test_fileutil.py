@@ -1,9 +1,9 @@
-"""atomic_write_text: no half files, no shared temp names, no leftovers (plan 03 review)."""
+"""atomic_write_text and atomic_write_bytes: no half files, no shared temp names, no leftovers (plan 03 review)."""
 import os
 
 import pytest
 
-from src.fileutil import atomic_write_text
+from src.fileutil import atomic_write_bytes, atomic_write_text
 
 
 def leftovers(folder):
@@ -56,3 +56,19 @@ def test_two_writers_never_share_a_temp_file(tmp_path, monkeypatch):
     for _ in range(20):
         atomic_write_text(tmp_path / "x.json", "data")
     assert len(set(seen)) == 20  # a fixed "x.json.tmp" would make two processes overwrite each other's half-written file
+
+
+def test_the_bytes_version_keeps_every_byte_and_replaces_an_existing_file(tmp_path):
+    target = tmp_path / "deep" / "runs.jsonl"
+    atomic_write_bytes(target, b"first\n")
+    atomic_write_bytes(target, b"caf\xc3\xa9 \xff\xfe\n")  # a line that is not valid UTF-8 survives
+    assert target.read_bytes() == b"caf\xc3\xa9 \xff\xfe\n" and leftovers(target.parent) == []
+
+
+def test_a_failed_replace_of_the_bytes_version_leaves_no_temp_file_and_keeps_the_old_content(tmp_path, monkeypatch):
+    target = tmp_path / "x.jsonl"
+    target.write_bytes(b"old")
+    monkeypatch.setattr(os, "replace", lambda src, dst: (_ for _ in ()).throw(PermissionError("held by a virus scanner")))
+    with pytest.raises(PermissionError):
+        atomic_write_bytes(target, b"new")
+    assert target.read_bytes() == b"old" and leftovers(tmp_path) == []

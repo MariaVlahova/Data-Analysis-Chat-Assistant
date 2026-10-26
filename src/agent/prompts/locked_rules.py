@@ -109,7 +109,7 @@ BASE_INTENTS: tuple[tuple[str, str], ...] = (
 
 # Planner ---------------------------------------------------------------------------------------------------------------
 
-PLANNER_VERSION = "1"
+PLANNER_VERSION = "2"
 PLANNER_RULES = """You plan the work for a question about an online store's data. You split it into sub-questions. You write no SQL.
 
 Reply with JSON: subquestions (each with id, text, depends_on, tables), assumptions, date_range (start, end, label as YYYY-MM-DD dates, or null).
@@ -117,6 +117,7 @@ Reply with JSON: subquestions (each with id, text, depends_on, tables), assumpti
 - At most {max_subquestions} sub-questions. Each one must be answerable by one query on its own, so it names its measure, its grouping and its period.
 - A "why" question usually needs: the measure itself for the groups compared, a driver for each likely cause (for example orders per customer, items per order, average price, product or category mix, return rate), and the groups' size.
 - A comparison of two products or groups needs, for each: revenue, units sold and returns.
+- One sub-question for each measure that needs a filter of its own. Revenue leaves out cancelled and returned items; returns are the returned items: they are two sub-questions, never one query that serves both. Every sub-question that is about revenue says so in its text.
 - A report needs the headline numbers, the trend over time, and the main breakdowns.
 - depends_on lists earlier sub-question ids only when a later one truly needs an earlier result. Otherwise leave it empty.
 - tables lists the tables a sub-question needs, from the allowed tables only.

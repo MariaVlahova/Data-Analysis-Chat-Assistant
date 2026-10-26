@@ -9,7 +9,8 @@ Steps, in order. The first failure stops the check:
  1  the text parses                                         SQL_SYNTAX (repairable)
  2  one statement, and it is a SELECT                       MULTI_STATEMENT, NOT_SELECT
  3  no denied function, table function or system variable   DISALLOWED_FUNCTION
- 4  only the four tables of the configured dataset          TABLE_NOT_ALLOWED, WILDCARD_TABLE
+ 4  only the four tables of the configured dataset, and     TABLE_NOT_ALLOWED, WILDCARD_TABLE, NO_DATA_TABLE
+    at least one of them (plan 12, A2, R2a)
  5  no blocked column name anywhere                         PII_COLUMN
  6  every column resolves, and its lineage is known         SQL_UNKNOWN_COLUMN (repairable)
  7  customer-row and demographic rules R1 to R6             PER_CUSTOMER_ROWS, DEMOGRAPHIC_ROW_LEVEL
@@ -474,6 +475,10 @@ class SQLGuard:
                 raise violation("TABLE_NOT_ALLOWED", "a table in another project")
             if self._allowlist.table_name(name) is None:
                 raise violation("TABLE_NOT_ALLOWED", "a table that is not one of the approved four")
+        if not refs:
+            # `SELECT 1 AS one`, or a CTE made of literals: it answers from nothing, so it cannot be an analysis of the store's data (R2a).
+            # A guard violation, never retried: a model that was talked into a request that is not about the data stops here.
+            raise violation("NO_DATA_TABLE", "the query reads none of the store's tables")
         return refs
 
     # step 5: blocked names ---------------------------------------------------------------------------

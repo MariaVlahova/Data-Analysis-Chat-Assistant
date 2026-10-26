@@ -10,7 +10,8 @@ import pytest
 
 from src.errors import ErrorKind
 from src.llm.routing import Step
-from tests.agent_support import composer_reply, guard_reply, make_rig, sql_reply
+from src.observability.tracing import exchange_file
+from tests.agent_support import composer_reply, guard_reply, make_real_gateway_rig, make_rig, sql_reply
 
 REAL_IDS = (987654321, 123456789)
 RANKED_SQL = "SELECT oi.user_id, SUM(oi.sale_price) AS spend FROM order_items oi GROUP BY oi.user_id ORDER BY spend DESC LIMIT 10"
@@ -150,3 +151,33 @@ def test_a_fresh_turn_resets_every_per_turn_field_so_nothing_leaks_between_quest
     assert values["results"] == {} and values["plan"] == {} and values["errors"][0]["kind"] == "OUT_OF_SCOPE" and len(values["errors"]) == 1
     assert values["outcome"] == "refused" and values["fatal"] is False and values["pending_action"] is None
     assert len(values["history"]) == 1 and "Brand A earned 1,234.5." in values["last_answer"]["text"]  # the refusal did not replace them
+
+
+# the exchange file of --debug-prompts (plan 12, R7c) holds none of it either ----------------------------------------------------------------------
+
+def test_no_real_customer_id_is_in_the_exchange_file(project, fake_bigquery):
+    fake_bigquery.add("spend", df=pd.DataFrame({"user_id": list(REAL_IDS), "spend": [500.0, 300.0]}))
+    rig, client = make_real_gateway_rig(
+        project, fake_bigquery=fake_bigquery, debug_prompts=True, InputGuardOut=guard_reply(standalone="Who are my top customers?"),
+        SqlOut=sql_reply(RANKED_SQL, "Top customers by their spend on your brands."), ComposerOut=composer_reply("The top customer spent 500."),
+    )
+    result = rig.ask("Who are my top customers?")
+    path = exchange_file(rig.tracer.traces_dir, rig.last_trace_id)
+    text = path.read_text(encoding="utf-8")
+    assert result.outcome == "answered" and len(text.splitlines()) >= 4  # the three attempts and the answer
+    assert re.search(r"Customer #\d{5,7}", text)  # the fake labels the user saw are there, in the answer line
+    assert not any(str(real) in text for real in REAL_IDS)
+
+
+def test_the_held_back_answer_is_in_no_line_of_the_exchange_file(project, fake_bigquery):
+    fake_bigquery.add("revenue", df=pd.DataFrame({"brand": ["Brand A"], "revenue": [1234.5]}))
+    rig, client = make_real_gateway_rig(
+        project, fake_bigquery=fake_bigquery, debug_prompts=True,
+        ComposerOut=composer_reply(f"Brand A earned 1,234.5. For details write to {EMAIL} today."),
+    )
+    result = rig.ask("revenue by brand")
+    assert result.outcome == "failed" and result.error.kind is ErrorKind.OUTPUT_BLOCKED
+    text = exchange_file(rig.tracer.traces_dir, rig.last_trace_id).read_text(encoding="utf-8")
+    for fragment in ("jane.roe", "example.test", "write to", "Brand A earned"):
+        assert fragment not in text, fragment
+    assert '"kind":"answer"' not in text  # and no answer line: there was no answer

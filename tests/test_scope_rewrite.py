@@ -337,15 +337,15 @@ def test_decisions_reach_the_trace_and_a_block_is_counted_but_a_models_mistake_i
         guard.check("SELECT COUNT(*) AS n FROM orders", ALICE)
         refused(guard, "SELECT email FROM users")
         refused(guard, "SELECT revenue FROM orders")  # unknown column: the model's to repair, not a guard decision
-        guard.check("SELECT 1 AS one", ALICE)
+        refused(guard, "SELECT 1 AS one")  # reads no table: a guard decision, counted as a block (plan 12, A2)
     spans = [json.loads(line) for line in tracer.trace_path(turn.trace_id).read_text(encoding="utf-8").splitlines()]
     guard_spans = [s for s in spans if s["name"] == "guard.sql"]
     assert len(guard_spans) == 4 and {s["kind"] for s in guard_spans} == {"guard"}
     decisions = [(e["attrs"]["outcome"], e["attrs"]["rule"]) for s in guard_spans for e in s["events"] if e["name"] == "guard.decision"]
-    assert decisions == [("rewrite", "SCOPE_BRANDS"), ("block", "PII_COLUMN"), ("rewrite", "LIMIT_ADDED")]
+    assert decisions == [("rewrite", "SCOPE_BRANDS"), ("block", "PII_COLUMN"), ("block", "NO_DATA_TABLE")]
     assert [s["status"] for s in guard_spans] == ["ok", "error", "error", "ok"] or guard_spans[1]["error_kind"] == "GUARD_VIOLATION"
     assert guard_spans[2]["error_kind"] == "SQL_UNKNOWN_COLUMN"
-    assert read_runs(tracer.metrics_file)[0][0]["guard_blocks"]["sql"] == 1
+    assert read_runs(tracer.metrics_file)[0][0]["guard_blocks"]["sql"] == 2  # the PII column and the query with no table
     text = json.dumps(guard_spans)
     assert "SELECT" not in text and "Brand A" not in text  # no SQL and no brand name in the guard's spans
 

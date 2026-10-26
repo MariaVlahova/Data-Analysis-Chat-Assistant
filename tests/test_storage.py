@@ -19,11 +19,11 @@ def tables(database: Database) -> set[str]:
 
 
 def test_migrations_apply_once_and_are_idempotent(db):
-    assert db.migrate() == [1, 2, 3, 4]
+    assert db.migrate() == [1, 2, 3, 4, 5]
     assert {"conversations", "schema_migrations", "saved_reports", "delete_batches", "audit_log", "token_usage", "budget_clears"} <= tables(db)
     assert db.migrate() == []  # nothing new the second time
     rows = db.conn.execute("SELECT version, name FROM schema_migrations").fetchall()
-    assert [(r["version"], r["name"]) for r in rows] == [(1, "conversations"), (2, "saved_reports_audit"), (3, "report_indexes"), (4, "token_usage")]
+    assert [(r["version"], r["name"]) for r in rows] == [(1, "conversations"), (2, "saved_reports_audit"), (3, "report_indexes"), (4, "token_usage"), (5, "audit_retention")]
 
 
 def test_a_second_connection_sees_the_same_state(tmp_path):
@@ -211,7 +211,9 @@ def test_001_creates_the_turn_counter_and_plan_08_added_002(db):
     db.migrate()
     columns = [r["name"] for r in db.conn.execute("PRAGMA table_info(conversations)")]
     assert columns == ["id", "user_id", "created_at", "last_active_at", "turn_count"]
-    assert sorted(p.name for p in MIGRATIONS_DIR.glob("*.sql")) == ["001_conversations.sql", "002_saved_reports_audit.sql", "003_report_indexes.sql", "004_token_usage.sql"]
+    assert sorted(p.name for p in MIGRATIONS_DIR.glob("*.sql")) == [
+        "001_conversations.sql", "002_saved_reports_audit.sql", "003_report_indexes.sql", "004_token_usage.sql", "005_audit_retention.sql",
+    ]
 
 
 def make_migrations(folder, **files):

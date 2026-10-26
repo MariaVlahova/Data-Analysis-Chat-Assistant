@@ -1,8 +1,10 @@
 """A pass-through around the model gateway that keeps what each call was asked and how it ended.
 
-The traces keep a hash of the system prompt and the counts of a call, not the text (and `--debug-prompts` keeps only the system prompt). To say
-that no personal data reached a prompt, the scenario runner needs the text of every prompt, so it wraps the gateway with this. The graph sees a
-gateway that behaves exactly like the one inside it.
+The traces keep a hash of the system prompt and the counts of a call, not the text. With `--debug-prompts` the exchange file beside the trace
+(`traces/<id>.exchange.jsonl`, plan 12) keeps each step's system text, its contents with every guarded result replaced by a line that names it, and
+its reply, masked, with no result row and no answer the Output Guard held back. To say that no personal data reached a prompt, the scenario
+runner needs the text of every prompt as it was sent, rows included, so it wraps the gateway with this. The graph sees a gateway that behaves
+exactly like the one inside it. This record is the runner's own, for its checks: it is not part of the traces or of the exchange file.
 """
 from __future__ import annotations
 

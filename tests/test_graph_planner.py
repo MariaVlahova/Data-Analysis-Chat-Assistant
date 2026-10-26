@@ -132,7 +132,7 @@ def test_when_every_sub_question_failed_the_turn_ends_in_compose_failure(rig):
     rig.gateway.queue(Step.INPUT_GUARD, guard_reply("why_question", "Why?"))
     rig.gateway.queue(Step.PLANNER, plan_reply("A", "B"))
     rig.gateway.queue(Step.SQL_WRITE, AgentError(ErrorKind.LLM_UNAVAILABLE), AgentError(ErrorKind.LLM_UNAVAILABLE))
-    result = rig.ask("Why?")
+    result = rig.ask("Why did my revenue change?")
     assert result.outcome == "failed" and "compose_failure" in rig.span_names()
     assert rig.calls(Step.EVIDENCE_CHECK) == 0 and rig.calls(Step.COMPOSER) == 0  # nothing to ask a model about
 
@@ -175,7 +175,7 @@ def test_a_failing_evidence_check_falls_back_to_the_code_check(rig):
     rig.gateway.queue(Step.SQL_WRITE, sql_reply())
     rig.gateway.queue(Step.EVIDENCE_CHECK, AgentError(ErrorKind.LLM_UNAVAILABLE))
     rig.gateway.queue(Step.COMPOSER, composer_reply(BODY))
-    assert rig.ask("Why?").outcome == "answered"
+    assert rig.ask("Why did my revenue change?").outcome == "answered"
 
 
 def test_the_evidence_prompt_holds_summaries_and_never_rows(rig):

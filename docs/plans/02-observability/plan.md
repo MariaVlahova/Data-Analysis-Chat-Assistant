@@ -116,7 +116,7 @@ Cost: add `llm.pricing_usd_per_1m` to config with `in` and `out` per model, defa
 - Alert (NFR20 stand-in): when any row has `pii_at_output > 0`, log CRITICAL, add an `ALERT` line to `/metrics` and print a one-line warning after the turn. Production sends a Pub/Sub event and a Cloud Monitoring alert (design-only).
 
 ### Retention (NFR22 is [NOT SPECIFIED])
-- Default 90 days for trace files (Q25 default). A purge runs at startup and deletes older files. `runs.jsonl` rows carry no PII and are kept. Config `retention.trace_days`.
+- Default 90 days for trace files (Q25 default). A purge runs at startup and deletes older files. `runs.jsonl` rows carry no PII and were first kept without a limit; they now have their own limit, `retention.metrics_days` (90, at least 31 because `metrics` counts the month's BigQuery use from the file), and so has `evaluations.jsonl`: `metrics.purge_old_rows` deletes the older rows at startup, keeps any line it cannot date, and skips a file another chat appended to in the meantime. Config `retention.trace_days` and `retention.metrics_days`.
 
 ## Files
 ```text

@@ -1,7 +1,8 @@
 """One PII-free metrics row per turn in `runs.jsonl`, and the totals computed from those rows (F42, F43).
 
 Rows hold counts, IDs (hashes only) and version tags. They never hold a question, an answer, SQL or a
-cell value, so the file is kept without a retention limit (plan 02).
+cell value, so they are kept longer than the traces (plan 02), but not for ever: `purge_old_rows` removes
+the rows older than `retention.metrics_days` at startup, from `runs.jsonl` and `evaluations.jsonl` alike.
 """
 from __future__ import annotations
 
@@ -9,11 +10,12 @@ import json
 import math
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
 from src import pii
+from src.fileutil import atomic_write_bytes
 
 OUTCOMES = ("answered", "partial", "refused", "action_done", "action_cancelled", "failed")
 # A correct refusal is not task success: it is counted as `refused` (impl).
@@ -196,6 +198,42 @@ def write_run_row(path: Path, row: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8", newline="\n") as handle:
         handle.write(line + "\n")
+
+
+def purge_old_rows(path: Path, days: int, *, now: datetime | None = None) -> int:
+    """Delete the rows of a metrics file (`runs.jsonl`, `evaluations.jsonl`) whose `ts` is more than `days` old. Returns how many went.
+
+    A line that cannot be dated (a torn or edited line, a row with no readable `ts`) is kept: nothing is deleted on a guess. The other
+    lines are kept byte for byte, and a file with nothing to remove is not touched. The file is replaced in one step, and not at all when
+    it grew after it was read (another chat appended a row): that purge is skipped and the next start tries again, so a row written
+    at the same time is never lost to it. No file is nothing to purge; a file that cannot be read or replaced raises `OSError`.
+    """
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=days)
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        return 0
+    kept: list[bytes] = []
+    removed = 0
+    for line in data.split(b"\n"):  # "\n" only, as in `read_runs`
+        if not line.strip():
+            continue
+        if _older_than(line, cutoff):
+            removed += 1
+        else:
+            kept.append(line)
+    if not removed or path.stat().st_size != len(data):
+        return 0
+    atomic_write_bytes(path, b"".join(line + b"\n" for line in kept))
+    return removed
+
+
+def _older_than(line: bytes, cutoff: datetime) -> bool:
+    try:
+        stamp = datetime.fromisoformat(json.loads(line)["ts"])
+    except (ValueError, KeyError, TypeError):  # not JSON or not UTF-8 (both ValueError), not an object, no `ts`, or a `ts` that is no date
+        return False
+    return (stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)) < cutoff
 
 
 def read_runs(path: Path) -> tuple[list[dict[str, Any]], int]:

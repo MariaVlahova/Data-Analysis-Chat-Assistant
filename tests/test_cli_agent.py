@@ -87,7 +87,7 @@ def test_a_crash_inside_the_graph_is_a_friendly_message_and_the_chat_continues(p
 
 def test_the_chat_keeps_going_after_a_failed_turn(config_path, scripted_gateway):
     script_answer(scripted_gateway)
-    result = chat(config_path, "alice", "first\n/quit\n")  # the scripted replies are used by the first question
+    result = chat(config_path, "alice", "first revenue question\n/quit\n")  # the scripted replies are used by the first question
     assert "Nike sold 1,200 items" in result.output
     again = chat(config_path, "alice", "boom\nsecond\n/quit\n")
     assert len(re.findall(r"Trace ID: [0-9a-f]{8}", again.output)) == 2 and "Goodbye" in again.output  # both fail (nothing scripted), the loop lives

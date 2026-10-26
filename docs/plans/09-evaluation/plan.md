@@ -325,7 +325,7 @@ All nine are **hard gates** (floor 1.0) in every suite, not only the new one: go
 | `test_trajectory_cli.py` | 9 | `run_trajectory` end to end: the run's files, no state in them, an unexpected path is a finding that does not fail a live run, a broken code rule exits 1 |
 | `test_trajectory_report.py` | 5 | The two rows beyond the PRD: measured, not met, not measured, and the exit code |
 
-**The first live run on the local model** (2026-10-25: `python -m eval.run_trajectory --config config.local.yaml`, the sample data and `qwen/qwen3-30b-a3b-2507`; the folder is `data/local/eval/trajectory-first/`, git-ignored). It says the rules hold with this model on this data. It says nothing about Gemini or BigQuery. A first launch was ended from outside the program before it finished (no error was printed, and the cause is not known) and was repeated; a complete run made before the independent read (`trajectory-early`) gave the same result. The figures below are from the run with the final rules.
+**The first live run on the local model** (2026-10-25: `python -m eval.run_trajectory --config config.local.yaml`, the sample data and `qwen/qwen3-30b-a3b-2507`; the folder is `data/local/eval/trajectory-first/`, git-ignored). It says the rules hold with this model on this data. It says nothing about Gemini or BigQuery. A first launch was ended from outside the program before it finished (no error was printed, and the cause is not known) and was repeated; a complete run made before the independent read gave the same result (its folder, `trajectory-early`, was not kept). The figures below are from the run with the final rules.
 
 | What | Result |
 |---|---|

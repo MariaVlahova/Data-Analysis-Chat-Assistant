@@ -39,6 +39,7 @@ FAKE_COLUMNS: dict[str, list[tuple[str, str]]] = {
 }
 FAKE_TABLE_BYTES = {"orders": 9_000_000, "order_items": 42_000_000, "products": 3_000_000, "users": 11_000_000}
 FAKE_BRANDS = ["A", "B", "C", "Brand A", "Brand B", "Brand C", "Calvin Klein", "Levi's", "Nike"]
+FAKE_PRODUCT_WORDS = pd.DataFrame({"category": ["Jeans", "Tops & Tees"], "department": ["Women", "Men"]})
 FAKE_LATEST = pd.Timestamp("2026-10-22 11:30:00", tz="UTC")
 
 
@@ -174,6 +175,7 @@ def default_client() -> FakeClient:
     })
     client.add("MAX(created_at)", df=pd.DataFrame({"latest": [FAKE_LATEST]}), bytes_processed=8_000_000)
     client.add("SELECT DISTINCT brand", df=pd.DataFrame({"brand": FAKE_BRANDS}), bytes_processed=1_000_000)
+    client.add("SELECT DISTINCT category", df=FAKE_PRODUCT_WORDS, bytes_processed=1_000_000)
     client.add("GROUP BY p.brand", df=pd.DataFrame({"brand": ["Nike", "Levi's"], "items": [1200, 900]}))
     client.add("COUNTIF", df=pd.DataFrame({"items": [180_000], "without_product": [0], "without_brand": [0]}))
     return client

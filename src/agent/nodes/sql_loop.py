@@ -11,6 +11,8 @@ Per sub-question, code decides every step and the model only writes SQL:
   ok                                  keep the result.
   SQL_SYNTAX, SQL_UNKNOWN_COLUMN      repair with the failing SQL, the normalized error and the exact column list, at most
                                       `loop.sql_repairs` times (2). The last repair uses Pro when it is enabled.
+  SQL_DEFINITION                      the same, with the definition of revenue as the error (plan 12, D2): a sum of sale prices that
+                                      counts cancelled or returned items. Not a guard violation: it is the model's own mistake.
   empty result                        one check-and-broaden query (`loop.broaden_attempts`), then an honest "no data". Not when
                                       groups were hidden for being small: widening would not help.
   GUARD_VIOLATION                     no retry. Status `blocked`, with the refusal text of the rule (F32).
@@ -39,7 +41,7 @@ from src.agent.boundary import node
 from src.agent.deps import Deps, TurnRuntime
 from src.agent.nodes.policy import current_user
 from src.agent.prompts.locked_rules import relevant_definitions
-from src.agent.prompts.templates import format_rows, format_summary, sql_prompt
+from src.agent.prompts.templates import format_rows, format_summary, rows_placeholder, sql_prompt
 from src.agent.state import (
     BLOCKED, EMPTY, FAILED, OK, SKIPPED, TOO_EXPENSIVE, TOO_SLOW, Attempts, SubQuestion, SubResult, TurnState, error_record,
 )
@@ -54,7 +56,7 @@ from src.textutil import squash
 
 log = logging.getLogger(__name__)
 
-SYNTAX_KINDS = frozenset({ErrorKind.SQL_SYNTAX, ErrorKind.SQL_UNKNOWN_COLUMN})
+SYNTAX_KINDS = frozenset({ErrorKind.SQL_SYNTAX, ErrorKind.SQL_UNKNOWN_COLUMN, ErrorKind.SQL_DEFINITION})  # the model's own mistakes: repaired, never refused
 MAX_SQL_CHARS = 4000  # the SQL kept in the state, for the trace and for debugging
 EARLIER_ROWS = 10  # rows of a dependency's result that a later sub-question may see
 
@@ -126,7 +128,7 @@ class _Runner:
             date_range=self.plan.get("date_range"),
             definitions=relevant_definitions(sub["text"], self.context.get("glossary_terms")),
             golden=self.context.get("trio_examples", []), earlier=self._earlier(sub, results),
-            failing_sql=failing_sql or None, error=error or None, columns=slice_,
+            failing_sql=failing_sql or None, error=error or None, columns=slice_, earlier_debug=self._earlier_debug(sub, results),
         )
         reply = self.deps.gateway.generate(
             step, system=parts.system, contents=parts.contents, schema=SqlOut, budget=self.rt.budget, prompt=parts.attrs(),
@@ -148,9 +150,18 @@ class _Runner:
                 shown[dep] = format_rows(limited) + "\nsummary: " + format_summary(guarded)
         return shown
 
+    @staticmethod
+    def _earlier_debug(sub: SubQuestion, results: dict[str, SubResult]) -> dict[str, str]:
+        """What the exchange file shows for each earlier result the writer was given: a line that names it, never its rows (plan 12, B1)."""
+        return {
+            dep: rows_placeholder(dep, results[dep]["guarded"]) for dep in sub["depends_on"]
+            if (results.get(dep) or {}).get("guarded") and results[dep].get("status") == OK
+        }
+
     # guard, run, guard ------------------------------------------------------------------------------------------
-    def guard_run(self, sql: str, attempts: Attempts) -> tuple[GuardedQuery, GuardedResult]:
-        """The SQL Guard, the dry run and the query, the Result Guard. The raw rows are a local here and go no further."""
+    def guard_run(self, sql: str, attempts: Attempts, question: str = "") -> tuple[GuardedQuery, GuardedResult]:
+        """The SQL Guard, the definition check, the dry run and the query, the Result Guard. The raw rows are a local here and go no further.
+        `question` is the sub-question the SQL answers: the definition check reads it."""
         text_hash = _sql_hash(sql)
         if text_hash in attempts["fingerprints"]:
             raise AgentError(ErrorKind.REPEATED_SQL, detail="the same query was written before")
@@ -162,6 +173,12 @@ class _Runner:
         gq = self.deps.sql_guard.check(sql, self.user)
         if self.deps.result_guard.references_session_label(gq.sql):
             raise violation("SESSION_LABEL", "the query uses the number of a customer label")
+        if self.deps.definition_check is not None:  # D2: after the guard has passed it and before anything runs; a repairable mistake, not a violation
+            try:
+                self.deps.definition_check.check(question, sql)
+            except AgentError:
+                event("sql.definition_failed", rule="REVENUE_DEFINITION")
+                raise
         if gq.fingerprint in attempts["fingerprints"]:  # the same query in another spelling
             raise AgentError(ErrorKind.REPEATED_SQL, detail="the same query was written before")
         attempts["fingerprints"].append(gq.fingerprint)
@@ -207,7 +224,7 @@ class _Runner:
             sql = written.sql
 
             try:
-                gq, guarded = self.guard_run(sql, attempts)
+                gq, guarded = self.guard_run(sql, attempts, sub["text"])
             except AgentError as err:
                 kind = err.kind
                 if kind in TURN_LIMIT_KINDS:

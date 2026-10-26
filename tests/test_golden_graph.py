@@ -42,7 +42,7 @@ def make(project, fake_bigquery, user=ALICE, *, golden=None, config=ENABLED):
 def simple(rig, question=QUESTION):
     rig.gateway.queue(Step.INPUT_GUARD, guard_reply(standalone=question))
     rig.gateway.queue(Step.SQL_WRITE, sql_reply())
-    rig.gateway.queue(Step.COMPOSER, composer_reply("Revenue is shown by brand."))
+    rig.gateway.queue(Step.COMPOSER, composer_reply("Brand A earned 10."))
 
 
 def why(rig, question=QUESTION):
@@ -50,7 +50,7 @@ def why(rig, question=QUESTION):
     rig.gateway.queue(Step.PLANNER, plan_reply("Revenue by brand"))
     rig.gateway.queue(Step.SQL_WRITE, sql_reply())
     rig.gateway.queue(Step.EVIDENCE_CHECK, {"enough": True, "missing": []})
-    rig.gateway.queue(Step.COMPOSER, composer_reply("Revenue is shown by brand."))
+    rig.gateway.queue(Step.COMPOSER, composer_reply("Brand A earned 10."))
 
 
 @pytest.fixture
@@ -176,8 +176,8 @@ def test_the_golden_retrieve_span_has_ids_and_scores_and_no_text(project, fake_b
 
 def test_no_match_still_records_the_span_with_empty_lists_and_adds_nothing(project, fake_bigquery, rows):
     rig = make(project, fake_bigquery, golden=GoldenBundle(GoldenIndex(TRIOS, min_similarity=0.99), Glossary(), 0, ()))
-    simple(rig, "How many warehouses do we run?")
-    rig.ask("How many warehouses do we run?")
+    simple(rig, "How many orders per warehouse do we run?")
+    rig.ask("How many orders per warehouse do we run?")
     (retrieve,) = [span for span in rig.spans() if span["name"] == "golden.retrieve"]
     assert retrieve["attrs"]["trio_ids"] == []
     assert "golden_trio" not in prompt(rig, Step.SQL_WRITE) and "for style only" not in prompt(rig, Step.COMPOSER)
@@ -245,7 +245,7 @@ def test_a_term_in_the_question_sends_its_definition_to_the_planner_the_sql_writ
     rig.gateway.queue(Step.PLANNER, plan_reply("Revenue by brand"))
     rig.gateway.queue(Step.SQL_WRITE, sql_reply())
     rig.gateway.queue(Step.EVIDENCE_CHECK, {"enough": True, "missing": []})
-    rig.gateway.queue(Step.COMPOSER, composer_reply("Revenue is shown by brand."))
+    rig.gateway.queue(Step.COMPOSER, composer_reply("Brand A earned 10."))
     rig.ask(question)
     for step in (Step.PLANNER, Step.COMPOSER):
         assert "AOV-DEFINITION" in prompt(rig, step)

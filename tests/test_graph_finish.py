@@ -39,7 +39,8 @@ def test_the_history_keeps_what_the_answer_said_not_the_reading_the_scope_and_th
     result = answer(rig, interpretation=long_reading)
     assert result.text.startswith("**How I read your question**") and "*Scope: your brands" in result.text  # the envelope is there for the user
     kept = state_of(rig)["history"][-1]["assistant"]
-    assert kept == BODY  # and not in what the next turn's Input Guard reads
+    assert kept.startswith(BODY)  # the body and the table of the figures (plan 12, D1) ...
+    assert "| brand | revenue |" in kept  # ... and not in what the next turn's Input Guard reads
     assert "How I read" not in kept and "Scope" not in kept and "Notes" not in kept
 
 
@@ -105,7 +106,7 @@ def test_a_partial_answer_names_the_setup_problem_of_the_part_that_failed(projec
     rig.gateway.queue(Step.SQL_WRITE, sql_reply(), sql_reply())
     rig.gateway.queue(Step.EVIDENCE_CHECK, {"enough": True, "missing": []})
     rig.gateway.queue(Step.COMPOSER, composer_reply(BODY))
-    result = rig.ask("Why?")
+    result = rig.ask("Why did my revenue change?")
     assert result.outcome == "partial" and 'I could not get "First". ' + BQ_SETUP_MESSAGE in result.text
     assert "not responding" not in result.text
 
@@ -140,7 +141,7 @@ def test_a_literal_in_the_kept_sql_is_masked_before_the_text_is_cut(rig):
     from tests.guard_support import ALICE
 
     def with_padding(pad):
-        return REVENUE_SQL.replace("GROUP BY", f"WHERE oi.status != '{'x' * pad}jane.doe@example.com' GROUP BY")
+        return REVENUE_SQL.replace("GROUP BY", f"AND oi.status != '{'x' * pad}jane.doe@example.com' GROUP BY")
 
     guard = rig.agent.deps.sql_guard
     at = guard.check(with_padding(0), ALICE).sql.index("jane.doe")

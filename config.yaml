@@ -3,9 +3,9 @@
 # [PROPOSED] is our proposal, (impl) is an implementation choice.
 
 app:
-  language: en           # A16
-  currency: USD          # A17
-  timezone: UTC          # A17
+  language: en           # A16: English only. Another value stops the app at start (plan 12): the prompts are written in English
+  currency: USD          # A17: US dollars only, for the same reason
+  timezone: UTC          # A17: dates and times are UTC
   data_dir: data         # runtime files: db.sqlite3, runs.jsonl, traces/, logs/, cache/ (git-ignored)
   # user_hash_salt: ...  # default: generated once into data/user_hash_salt
   # users_file: users.yaml  # config.local.yaml names users.local.yaml
@@ -28,6 +28,8 @@ guards:
   max_input_chars: 2000
   require_reviewed_allowlist: true   # plan 05: the chat starts only once schema_allowlist.yaml says reviewed_against_live: true
                                      # (a person compared it with the live schema and agreed the PII split). false: start with a warning.
+  require_domain_words: true         # plan 12 (R2a): a data question must hold a word of the store's domain (orders, revenue, a brand ...), or the user is
+                                     # asked which data to look at. A check in code behind the classifier. false: only the classifier decides.
   denied_functions: []               # plan 05: functions to refuse IN ADDITION to the ones built into the SQL Guard
                                      # (EXTERNAL_QUERY, ML.*, AI.*, OBJ.*, SESSION_USER, ... see ALWAYS_DENIED_FUNCTIONS in src/config.py).
                                      # An entry is a function name or NAMESPACE.* for a whole namespace, for example [FARM_FINGERPRINT, "SAFE.*"].
@@ -41,6 +43,7 @@ loop:
 
 composer:
   numeric_retry: 0                   # Q29: 0 removes an unverified number and says so; 1 allows one re-ask
+  result_table_rows: 20              # plan 12 (D1): a simple answer ends with its result as a table of up to this many rows, built by code (impl)
 
 budget:                              # all [OPEN] until Q3 is answered (derivation in plan 04)
   simple: {calls: 8, seconds: 60}
@@ -74,14 +77,15 @@ delete:
   undo_days: 30                      # [PROPOSED] NFR17
 
 retention:
-  audit_days: 365                    # [PROPOSED] NFR21
+  audit_days: 365                    # [PROPOSED] NFR21: the audit log is kept this long, then purged at startup (plan 12). At least 365: the database lets no younger row go
   checkpoint_days: 90
   trace_days: 90                     # [NOT SPECIFIED], Q25 default
+  metrics_days: 90                   # (impl) the rows of runs.jsonl and evaluations.jsonl older than this are deleted at startup. At least 31: /metrics counts the month's BigQuery use from them
 
 observability: {}                    # runs.jsonl, evaluations.jsonl and traces/ live inside app.data_dir. To move them, set:
-  # metrics_file: data/runs.jsonl    # one PII-free row per question (replace the {} above with these keys)
+  # metrics_file: data/runs.jsonl    # one PII-free row per question, deleted after retention.metrics_days (replace the {} above with these keys)
   # traces_dir: data/traces          # one file per question, deleted after retention.trace_days
-  # evaluations_file: data/evaluations.jsonl   # one PII-free row per turn that /eval judged, with the judge's tokens
+  # evaluations_file: data/evaluations.jsonl   # one PII-free row per turn that /eval judged, with the judge's tokens; deleted after retention.metrics_days
 
 evaluation:
   enabled: true                      # the /eval command is available in the chat. Nothing is judged until someone types /eval: a chat turn makes no judge call.

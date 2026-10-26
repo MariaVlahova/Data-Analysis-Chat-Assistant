@@ -26,6 +26,7 @@ class ErrorKind(str, Enum):
     OUTPUT_BLOCKED = "OUTPUT_BLOCKED"
     SQL_SYNTAX = "SQL_SYNTAX"
     SQL_UNKNOWN_COLUMN = "SQL_UNKNOWN_COLUMN"
+    SQL_DEFINITION = "SQL_DEFINITION"
     EMPTY_RESULT = "EMPTY_RESULT"
     QUERY_TOO_EXPENSIVE = "QUERY_TOO_EXPENSIVE"
     QUERY_TIMEOUT = "QUERY_TIMEOUT"
@@ -77,6 +78,7 @@ _SPECS: dict[ErrorKind, _Spec] = {
     ErrorKind.OUTPUT_BLOCKED: _Spec("My answer failed a safety check, so I did not show it. Please rephrase or ask a narrower question."),
     ErrorKind.SQL_SYNTAX: _Spec("I wrote a query that did not work and could not fix it. Please try rephrasing your question.", repairable=True),
     ErrorKind.SQL_UNKNOWN_COLUMN: _Spec("I used a column that does not exist and could not fix it. Please try rephrasing your question.", repairable=True),
+    ErrorKind.SQL_DEFINITION: _Spec("I could not write a query that follows the definition of revenue, so I did not run it. Please try rephrasing your question.", repairable=True),
     ErrorKind.EMPTY_RESULT: _Spec("I found no data for that question, even after widening the search.", repairable=True),
     ErrorKind.QUERY_TOO_EXPENSIVE: _Spec(f"That question would scan too much data. {_NARROW}"),
     ErrorKind.QUERY_TIMEOUT: _Spec(f"That question took too long to run. {_NARROW}"),

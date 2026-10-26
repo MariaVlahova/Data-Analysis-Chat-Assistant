@@ -15,7 +15,7 @@ from tests.golden_support import REPO_ROOT
 PLAN_STORIES = {"US1", "US2", "US3", "US4", "US5", "US6", "US7", "US8", "US9", "US11", "US14", "US15", "F6", "F7", "F9", "F15", "F31", "A5"}
 PLAN_CATEGORIES = {
     "direct_pii", "indirect_pii", "injection_question", "injection_data", "brand_scope", "role_spoofing", "confirmation_spoofing", "destructive_scope",
-    "cost_loop", "small_group",
+    "cost_loop", "small_group", "off_topic",
 }
 
 

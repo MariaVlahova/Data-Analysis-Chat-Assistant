@@ -35,6 +35,7 @@ from src.llm.limiter import RateLimiter
 from src.llm.openai_compat import CompatClient, CompatHTTPError
 from src.llm.routing import Router, Step
 from src.observability import current_trace_id, event, prompt_attrs, span, turn_metrics
+from src.observability.exchange import DEBUG_CONTENTS, record_attempt
 
 log = logging.getLogger(__name__)
 
@@ -124,6 +125,7 @@ class _Run:
     temperature: float
     max_output_tokens: int
     prompt: dict[str, Any]
+    debug_contents: str | None = None  # the safe rendering of `contents` for the exchange file (plan 12, B1); None: the caller gave none
     outbound: int = 0
     tokens_in: int = 0
     tokens_out: int = 0
@@ -242,11 +244,14 @@ class LLMGateway:
         it the span carries a hash of `system` only. Raises the typed errors listed in the module docstring."""
         chain = self._router.chain(step)
         settings = self._router.settings(step)
+        attrs = dict(prompt) if prompt else prompt_attrs(step.value, "unversioned", system)
+        # The exchange file is given the prompt builder's rendering of the contents, with the guarded rows left out, and never the contents that
+        # were sent: this call has no way to write a row to disk. The rendering is not a span attribute, so it leaves `prompt` here.
+        debug_contents = attrs.pop(DEBUG_CONTENTS, None)
         run = _Run(
             step=step, system=system, contents=contents, schema=schema, budget=budget,
             temperature=settings.temperature if temperature is None else temperature,
-            max_output_tokens=settings.max_output_tokens,
-            prompt=dict(prompt) if prompt else prompt_attrs(step.value, "unversioned", system),
+            max_output_tokens=settings.max_output_tokens, prompt=attrs, debug_contents=debug_contents,
         )
         for rank, model in enumerate(chain):
             result = self._ask_model(run, model, rank)
@@ -331,6 +336,7 @@ class LLMGateway:
                     breaker.record_success()  # the service answered, so it is up
                 sp.set(retry_reason=failure.reason)
                 sp.finish("error", failure.kind.value)
+                self._exchange(run, sp, model, None, failure.kind.value)
                 if failure.terminal:
                     raise failure.to_error() from None
                 return failure
@@ -344,11 +350,13 @@ class LLMGateway:
             if reply.blocked is not None:  # the model's safety filters refused: asking again would only be refused again
                 sp.set(blocked=reply.blocked)
                 sp.finish("error", ErrorKind.LLM_BLOCKED.value)
+                self._exchange(run, sp, model, reply, ErrorKind.LLM_BLOCKED.value)
                 raise AgentError(ErrorKind.LLM_BLOCKED, detail=reply.blocked)
 
             truncated = reply.finish == "MAX_TOKENS"
             if not reply.text.strip():
                 # No text and no refusal: a glitch, or the output cap spent on thinking. Not a safety block, so ask again.
+                self._exchange(run, sp, model, reply, ErrorKind.LLM_BAD_OUTPUT.value)
                 return self._bad_output(
                     run, sp, "the reply was empty" + (" and ended at the output token limit" if truncated else ""), truncated
                 )
@@ -357,12 +365,23 @@ class LLMGateway:
                 why += f" (finish reason {reply.finish})"
             elif why is None and truncated and run.schema is None:
                 why = "the reply was cut off at the output token limit"  # free text has no schema to fail, but half an answer is no answer
+            self._exchange(run, sp, model, reply, ErrorKind.LLM_BAD_OUTPUT.value if why is not None else None)
             if why is not None:
                 return self._bad_output(run, sp, why, truncated)
             return LLMResult(
                 parsed=parsed, text=reply.text, model_used=model, tokens_in=run.tokens_in, tokens_out=run.tokens_out,
                 attempts=run.outbound, fallback_used=fallback,
             )
+
+    @staticmethod
+    def _exchange(run: _Run, sp, model: str, reply: _Reply | None, error_kind: str | None) -> None:
+        """One line of the exchange file for this attempt (plan 12, B1): a no-op unless `--debug-prompts` is on. The contents are the caller's safe
+        rendering, never the contents sent. The Composer's reply is not written: its answer is, after the Output Guard has passed it."""
+        record_attempt(
+            step=run.step.value, model=model, attempt=run.outbound, span_id=sp.span_id, system=run.system, contents=run.debug_contents,
+            reply=reply.text if reply is not None else None, tokens_in=reply.tokens_in if reply is not None else 0,
+            tokens_out=reply.tokens_out if reply is not None else 0, error_kind=error_kind, hold_reply=run.step is Step.COMPOSER,
+        )
 
     @staticmethod
     def _bad_output(run: _Run, sp, why: str, truncated: bool = False) -> object:
